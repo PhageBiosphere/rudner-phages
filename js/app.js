@@ -15,14 +15,15 @@
     phage: null, digests: [], results: [],
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
-    D: null, msg: "", busy: "", open: { enz: null, gel: null },
+    D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: false, y: 160 },
     sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", digest: "" }, pageSize: 25, page: 0,
     control: null          // {seq, name}
   };
 
-  const GEL_OPT = { numbers: true, names: true, scale: true };
+  const GEL_OPT = { numbers: true, names: true, scale: true, height: 300, run: 1, gap: 0 };
   try { Object.assign(GEL_OPT, JSON.parse(localStorage.getItem("rudner.gelopt") || "{}")); } catch (err) { /* remembered settings are optional */ }
-  const gelOptBar = () => `<span class="gelopt">Show: ${[["numbers", "lane numbers"], ["names", "enzyme names"], ["scale", "ladder sizes"]].map((o) => `<label class="check"><input type="checkbox" data-gelopt="${o[0]}"${GEL_OPT[o[0]] ? " checked" : ""}>${o[1]}</label>`).join("")}</span>`;
+  const saveGelOpt = () => { try { localStorage.setItem("rudner.gelopt", JSON.stringify(GEL_OPT)); } catch (err) { /* not remembered */ } };
+  const gelOptBar = () => `<span class="gelopt">Labels: ${[["numbers", "lane numbers"], ["names", "enzyme names"], ["scale", "ladder sizes"]].map((o) => `<label class="check"><input type="checkbox" data-gelopt="${o[0]}"${GEL_OPT[o[0]] ? " checked" : ""}>${o[1]}</label>`).join("")}</span>`;
   // ---------- small helpers ----------
   const publicUrl = (path) => (path ? sb.storage.from(CFG.IMAGE_BUCKET).getPublicUrl(path).data.publicUrl : "");
   const enzyme = (id) => S.enzymes.find((z) => z.restriction_enzyme_id === id) || {};
@@ -127,7 +128,7 @@
       control: x ? x.positive_control_passed : null, controlName: (x && x.control_name) || "Lambda DNA",
       gelPath: (x && x.gel_image_path) || "", controlPath: (x && x.control_image_path) || "", virtualPath: (x && x.virtual_image_path) || "",
       gelOriginal: (x && x.gel_original_url) || "", controlOriginal: (x && x.control_original_url) || "",
-      legacyGelUrl: (x && x.gel_image_url) || "", lanes: [], saved: new Map(), orderText: "", orderMsg: "", showStoredVirtual: false
+      legacyGelUrl: (x && x.gel_image_url) || "", lanes: [], saved: new Map(), controlCalls: Object.assign({}, (x && x.control_results) || {}), orderText: "", orderMsg: "", showStoredVirtual: false
     };
     if (x) {
       for (const r of S.results.filter((r) => r.restriction_digest_experiment_id === D.id)) D.saved.set(r.restriction_enzyme_id, r);
@@ -140,7 +141,7 @@
       for (const r of rest) if (!D.lanes.some((L) => L.id === r.restriction_enzyme_id)) D.lanes.push(mk(r.restriction_enzyme_id));
     }
     S.D = D; S.msg = "";
-    S.open = { enz: null, gel: null };
+    S.open = { enz: null, gel: null, ctl: null }; S.tab = "digest";
   }
   function addLane(kind) {
     const L = S.D.lanes;
@@ -197,7 +198,8 @@
         experiment_date: D.date || null, ladder: D.ladder || null, positive_control_passed: D.control, control_name: D.controlName || null,
         gel_image_path: D.gelPath || null, control_image_path: D.controlPath || null, virtual_image_path: D.virtualPath || null,
         gel_original_url: D.gelOriginal.trim() || null, control_original_url: D.controlOriginal.trim() || null,
-        lane_layout: D.lanes.map((L) => (L.sp === "ladder" ? "L" : L.sp === "uncut" ? "U" : L.id))
+        lane_layout: D.lanes.map((L) => (L.sp === "ladder" ? "L" : L.sp === "uncut" ? "U" : L.id)),
+        control_results: Object.fromEntries(D.lanes.filter((L) => !L.sp && D.controlCalls[L.id]).map((L) => [L.id, D.controlCalls[L.id]]))
       };
       const q = D.isNew
         ? sb.from("restriction_digest_experiments").insert({ restriction_digest_experiment_id: D.id, phage_id: S.phage.phage_id, ...row })
@@ -219,10 +221,10 @@
       for (const k of gone) jobs.push(sb.from("restriction_digest_results").delete().eq("restriction_digest_result_id", D.saved.get(k).restriction_digest_result_id));
       const bad = (await Promise.all(jobs)).find((r) => r.error);
       if (bad) throw bad.error;
-      const keepOpen = S.open, id = D.id, keepGenome = S.genome, keepGenes = S.genes;
+      const keepOpen = S.open, keepTab = S.tab, id = D.id, keepGenome = S.genome, keepGenes = S.genes;
       await loadBase(); await loadPhage(S.phage.phage_id);
       S.genome = keepGenome; S.genes = keepGenes;
-      openDigest(id); S.open = keepOpen;
+      openDigest(id); S.open = keepOpen; S.tab = keepTab;
       const unset = S.D.lanes.filter((L) => !L.sp && !L.observed).length;
       S.msg = unset ? `Saved. ${unset} enzyme${unset === 1 ? "" : "s"} still without a result; come back to finish.` : "Saved.";
     } catch (err) { S.msg = `Not saved: ${err.message || err}`; }
@@ -291,13 +293,34 @@
       </div>`;
   }
 
-  function virtualGel() {
-    const D = S.D;
-    if (!S.genome || !S.genome.seq) return "";
-    if (!D.lanes.length) return '<p class="sub">The predicted bands appear here once a lane is added.</p>';
-    const lanes = D.lanes.map((L) => (L.sp === "ladder" ? { label: "Ladder", kind: "ladder" } : L.sp === "uncut" ? { label: "Uncut", kind: "bands", fragments: [S.genome.seq.length] } : { label: laneName(L), kind: "bands", fragments: cutsOf(L.id).fragments }));
+  // ---------- the two panels of a digest: the phage's own DNA, and the control DNA ----------
+  // K("digest") and K("control") answer the same questions for each, so the page is drawn by the same code.
+  function K(kind) {
+    const D = S.D, ctl = kind === "control";
+    const seq = ctl ? (S.control && S.control.seq) || "" : (S.genome && S.genome.seq) || "";
+    const circ = ctl ? false : !!(S.genome && S.genome.circular);
+    const cuts = (id) => (seq ? DG.digest(seq, enzyme(id).recognition_sequence, circ) : null);
+    const vcall = ctl ? (id) => { const c = cuts(id); return c ? (c.sites > 0 ? "Digestion" : "No digestion") : ""; } : virtualCall;
+    const ownImg = ctl ? publicUrl(D.controlPath) : publicUrl(D.gelPath) || D.legacyGelUrl;
+    return {
+      ctl, seq, cuts, vcall, ownImg, img: ownImg || (ctl ? "" : phageGel()),
+      get: (L) => (ctl ? D.controlCalls[L.id] || "" : L.observed || ""),
+      set: (L, v) => { if (ctl) D.controlCalls[L.id] = v; else L.observed = v; },
+      dnaName: ctl ? (S.control && S.control.name) || D.controlName || "Lambda DNA" : S.phage.phage_name,
+      title: ctl ? "Control digest" : "Lab digest"
+    };
+  }
+  function gelLanes(kind) {
+    const D = S.D, k = K(kind);
+    const lanes = D.lanes.map((L) => (L.sp === "ladder" ? { label: "Ladder", kind: "ladder" } : L.sp === "uncut" ? { label: "Uncut", kind: "bands", fragments: [k.seq.length] } : { label: laneName(L), kind: "bands", fragments: k.cuts(L.id).fragments }));
     if (!D.lanes.some((L) => L.sp === "ladder")) lanes.unshift({ label: "Ladder", kind: "ladder" });
-    return `<div class="gelscroll">${DG.gelSvg(lanes, GEL_OPT)}</div>${D.lanes.some((L) => L.sp === "ladder") ? "" : '<p class="tiny">A 1 kb ladder is drawn first for scale; it is not one of your lanes.</p>'}`;
+    return lanes;
+  }
+  function virtualGel(kind) {
+    const D = S.D, k = K(kind || "digest");
+    if (!k.seq) return "";
+    if (!D.lanes.length) return '<p class="sub">The predicted bands appear here once a lane is added.</p>';
+    return `<div class="gelscroll">${DG.gelSvg(gelLanes(kind || "digest"), GEL_OPT)}</div>${D.lanes.some((L) => L.sp === "ladder") ? "" : '<p class="tiny">A 1 kb ladder is drawn first for scale; it is not one of your lanes.</p>'}`;
   }
   function genomeBox() {
     const g = S.genome;
@@ -330,16 +353,37 @@
       <p class="tiny">^ marks where the enzyme cuts${g ? "; the number in brackets is how many times it cuts this genome" : ""}. <a href="#/enzymes" target="_blank" rel="noopener">Enzyme details</a></p>`;
   }
   const CALL_BTN = [["Digestion", "✓", "ok", "Digests: the lab gel shows the enzyme cut the DNA"], ["Partial digestion", "~", "warn", "Partial digestion: some DNA cut, some left uncut"], ["No digestion", "✗", "bad", "Does not digest: the DNA is uncut in the lab gel"], ["Uninterpretable", "?", "mute", "Undetermined: the lane cannot be read"]];
-  // One column per enzyme (ladder and uncut lanes have no result): the lab digest row is clicked, the virtual row is predicted.
-  function laneStrip() {
-    const D = S.D, cols = D.lanes.map((L, i) => ({ L, i })).filter((x) => !x.L.sp);
+  // One column per enzyme (ladder and uncut lanes have no result): the lab row is clicked, the virtual row is predicted.
+  function laneStrip(kind) {
+    const D = S.D, k = K(kind), cols = D.lanes.map((L, i) => ({ L, i })).filter((x) => !x.L.sp);
     if (!cols.length) return '<div class="note warn">No enzymes chosen yet. Open <b>Enzymes and lane order</b> above to choose them.</div>';
-    const head = cols.map(({ L, i }) => `<th class="${isBlocked(L) ? "blk" : ""}" title="${esc(cutSite(enzyme(L.id)))}"><span class="ln">lane ${i + 1}</span>${esc(laneName(L))}</th>`).join("");
-    const lab = cols.map(({ L, i }) => `<td class="${isBlocked(L) ? "blk" : ""}"><div class="cb">${CALL_BTN.map((k) => `<button class="call ${L.observed === k[0] ? "on " + k[2] : L.observed ? "" : "unset"}" data-call="${i}" data-val="${k[0]}" title="${k[3]}" aria-label="${k[0]}">${k[1]}</button>`).join("")}</div></td>`).join("");
-    const virt = cols.map(({ L }) => { const c = cutsOf(L.id), v = virtualCall(L.id); return `<td class="${isBlocked(L) ? "blk" : ""}" title="${c ? (c.sites ? `Fragments: ${c.fragments.slice(0, 8).map(fmt).join(", ")}${c.fragments.length > 8 ? " …" : ""} bp` : "No recognition sites in this genome, so this lane should stay uncut") : "No genome sequence yet"}">${!v ? '<span class="sub">—</span>' : v === "Digestion" ? `<span class="t-ok">✓</span> ${c ? `${c.sites} cut${c.sites === 1 ? "" : "s"}` : "digests"}` : `<span class="t-bad">✗</span> ${c ? "0 cuts" : "no digestion"}`}</td>`; }).join("");
-    const verdict = cols.map(({ L }) => { const v = virtualCall(L.id); return `<td class="${isBlocked(L) ? "blk" : ""}">${!L.observed ? '<span class="t-warn">not set</span>' : !v ? "" : isBlocked(L) ? '<b class="t-bad">blocked</b>' : v === L.observed ? '<span class="t-ok">as predicted</span>' : L.observed === "Partial digestion" ? '<span class="t-warn">partial</span>' : L.observed === "Uninterpretable" ? '<span class="sub">unclear</span>' : '<span class="t-warn">differs</span>'}</td>`; }).join("");
+    const blk = (L) => !k.ctl && isBlocked(L);
+    const head = cols.map(({ L, i }) => `<th class="${blk(L) ? "blk" : ""}" title="${esc(cutSite(enzyme(L.id)))}"><span class="ln">lane ${i + 1}</span>${esc(laneName(L))}</th>`).join("");
+    const lab = cols.map(({ L, i }) => { const o = k.get(L); return `<td class="${blk(L) ? "blk" : ""}"><div class="cb">${CALL_BTN.map((b) => `<button class="call ${o === b[0] ? "on " + b[2] : o ? "" : "unset"}" data-call="${i}" data-val="${b[0]}" title="${b[3]}" aria-label="${b[0]}">${b[1]}</button>`).join("")}</div></td>`; }).join("");
+    const virt = cols.map(({ L }) => { const c = k.cuts(L.id), v = k.vcall(L.id); return `<td class="${blk(L) ? "blk" : ""}" title="${c ? (c.sites ? `Fragments: ${c.fragments.slice(0, 8).map(fmt).join(", ")}${c.fragments.length > 8 ? " …" : ""} bp` : "No recognition sites in this DNA, so this lane should stay uncut") : "No sequence yet"}">${!v ? '<span class="sub">—</span>' : v === "Digestion" ? `<span class="t-ok">✓</span> ${c ? `${c.sites} cut${c.sites === 1 ? "" : "s"}` : "digests"}` : `<span class="t-bad">✗</span> ${c ? "0 cuts" : "no digestion"}`}</td>`; }).join("");
+    const verdict = cols.map(({ L }) => { const v = k.vcall(L.id), o = k.get(L); return `<td class="${blk(L) ? "blk" : ""}">${!o ? '<span class="t-warn">not set</span>' : !v ? "" : blk(L) ? '<b class="t-bad">blocked</b>' : v === o ? '<span class="t-ok">as predicted</span>' : o === "Partial digestion" ? '<span class="t-warn">partial</span>' : o === "Uninterpretable" ? '<span class="sub">unclear</span>' : '<span class="t-warn">differs</span>'}</td>`; }).join("");
     return `<div class="tablescroll"><table class="results"><thead><tr><th></th>${head}</tr></thead><tbody>
-      <tr><th>Lab digest</th>${lab}</tr><tr><th>Virtual digest</th>${virt}</tr><tr class="cmp"><th></th>${verdict}</tr></tbody></table></div>`;
+      <tr><th>${k.ctl ? "Control digest" : "Lab digest"}</th>${lab}</tr><tr><th>Virtual digest</th>${virt}</tr><tr class="cmp"><th></th>${verdict}</tr></tbody></table></div>`;
+  }
+  // The gel pair: the lab image on the left, the virtual digest on the right, with a guide line that can be dragged across both.
+  function gelPair(kind) {
+    const D = S.D, k = K(kind);
+    const from = k.img && !k.ownImg ? ` <span class="sub">from ${srcName(k.img)}</span>` : "";
+    const empty = k.ctl ? "No control digest image yet. Add one under <b>Control image and control DNA</b> below." : "No lab digest image yet. Add one under <b>Gel image and date</b> below.";
+    const noSeq = k.ctl ? (S.control && S.control.error) || "Loading the control sequence…" : S.genome && S.genome.loading ? "Reading the genome…" : "No genome sequence yet, so no virtual digest. Results can still be recorded now and compared later.";
+    return `<div class="row tools">
+        <span class="gelopt">Virtual digest: <label class="check">height <input type="range" min="180" max="800" step="10" value="${GEL_OPT.height}" data-gelnum="height"><output>${GEL_OPT.height}px</output></label>
+          <label class="check" title="A longer run moves the bands further down the gel; small fragments run off the end">run time <input type="range" min="40" max="250" step="5" value="${Math.round(GEL_OPT.run * 100)}" data-gelnum="run"><output>${Math.round(GEL_OPT.run * 100)}%</output></label></span>
+        ${gelOptBar()}
+        <label class="check"><input type="checkbox" data-guide${S.guide.on ? " checked" : ""}>guide line</label>
+        <span class="dl">Download: <button class="mini" data-dl="lab"${k.img ? "" : " disabled"}>${k.ctl ? "control" : "lab"} digest</button><button class="mini" data-dl="virtual"${k.seq && D.lanes.length ? "" : " disabled"}>virtual digest</button><button class="mini" data-dl="both"${k.img && k.seq && D.lanes.length ? "" : " disabled"}>both together</button></span>
+      </div>
+      <div class="two gels" id="gels">
+        ${S.guide.on ? `<div class="guide" id="guide" style="top:${S.guide.y}px" title="Drag up or down to compare band positions"><span>drag</span></div>` : ""}
+        <div><b>${k.title}</b>${from}${k.img ? `<img class="big" src="${esc(k.img)}" alt="${k.title}" draggable="false">` : `<div class="empty">${empty}</div>`}
+          ${k.img ? `<p class="tiny"><a href="${esc(k.img)}" target="_blank" rel="noopener">Open the image</a>${!k.ctl && D.gelOriginal ? ` · <a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}${k.ctl && D.controlOriginal ? ` · <a href="${esc(D.controlOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}</p>` : ""}</div>
+        <div><b>Virtual digest</b> <span class="sub">${esc(k.dnaName)}, from the DNA sequence, same lane order</span><div id="vgel">${k.seq ? virtualGel(kind) : `<div class="empty">${esc(noSeq)}</div>`}</div></div>
+      </div>`;
   }
   function gelDetails() {
     const D = S.D;
@@ -347,47 +391,80 @@
         <label>Date of the digest<input type="date" data-f="date" value="${esc(D.date)}"></label>
         <label>Ladder<select data-f="ladder"><option value="">— not recorded —</option>${CFG.LADDERS.concat(D.ladder && !CFG.LADDERS.includes(D.ladder) ? [D.ladder] : []).map((l) => `<option${l === D.ladder ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
       </div>
-      <div class="two">
-        <div>${imageBox("gel", "Lab digest image", D.gelPath, D.legacyGelUrl || phageGel())}
-          <label class="full">Link to the full-size original (SharePoint / OneDrive) <span class="sub">— lab members only</span><input type="url" data-f="gelOriginal" value="${esc(D.gelOriginal)}" placeholder="https://…"></label></div>
-        <div>${imageBox("control", "Control digest image (optional)", D.controlPath, "")}
-          <label class="full">Link to the full-size original of the control <span class="sub">— lab members only</span><input type="url" data-f="controlOriginal" value="${esc(D.controlOriginal)}" placeholder="https://…"></label>
-          <label>Control DNA<input data-f="controlName" value="${esc(D.controlName)}"></label>
-          <div id="controlgel">${controlGel()}</div></div>
-      </div>`;
+      ${imageBox("gel", "Lab digest image", D.gelPath, D.legacyGelUrl || phageGel())}
+      <label class="full">Link to the full-size original (SharePoint / OneDrive) <span class="sub">— lab members only</span><input type="url" data-f="gelOriginal" value="${esc(D.gelOriginal)}" placeholder="https://…"></label>`;
   }
-  function controlGel() {
+  function controlDetails() {
     const D = S.D, c = S.control;
-    if (!c) return '<button data-act="control">Show the expected control digest (lambda)</button>';
-    if (!c.seq) return `<p class="t-warn">${esc(c.error || "No control sequence.")}</p>`;
-    const enz = D.lanes.filter((L) => !L.sp);
-    return `<p class="sub">Expected: ${esc(c.name)} (${fmt(c.seq.length)} bp) cut with the same enzymes.</p>
-      ${enz.length ? `<div class="gelscroll">${DG.gelSvg([{ label: "Ladder", kind: "ladder" }].concat(enz.map((L) => ({ label: laneName(L), kind: "bands", fragments: DG.digest(c.seq, enzyme(L.id).recognition_sequence, false).fragments }))), Object.assign({ height: 220 }, GEL_OPT))}</div>` : '<p class="sub">Add enzymes to see their expected control pattern.</p>'}
-      <label class="btn">Use a different control sequence (FASTA file)<input type="file" accept=".fasta,.fa,.fna,.txt" data-controlfasta hidden></label>`;
+    return `${imageBox("control", "Control digest image", D.controlPath, "")}
+      <label class="full">Link to the full-size original of the control <span class="sub">— lab members only</span><input type="url" data-f="controlOriginal" value="${esc(D.controlOriginal)}" placeholder="https://…"></label>
+      <div class="row fields"><label>Control DNA<input data-f="controlName" value="${esc(D.controlName)}"></label>
+        <span class="sub">${c && c.seq ? `Sequence in use: ${esc(c.name)} (${fmt(c.seq.length)} bp)` : ""}</span>
+        <label class="btn">Use a different control sequence (FASTA file)<input type="file" accept=".fasta,.fa,.fna,.txt" data-controlfasta hidden></label></div>`;
   }
   function viewDigest() {
-    const D = S.D, p = S.phage;
-    const enz = D.lanes.filter((L) => !L.sp), unset = enz.filter((L) => !L.observed).length;
-    const ownGel = publicUrl(D.gelPath) || D.legacyGelUrl, gel = ownGel || phageGel(), g = S.genome && S.genome.seq;
-    const openEnz = S.open.enz == null ? !D.lanes.length : S.open.enz, openGel = S.open.gel == null ? false : S.open.gel;
+    const D = S.D, p = S.phage, ctl = S.tab === "control", k = K(S.tab);
+    const enz = D.lanes.filter((L) => !L.sp), unset = enz.filter((L) => !L.observed).length, cunset = enz.filter((L) => !D.controlCalls[L.id]).length;
+    const openEnz = S.open.enz == null ? !D.lanes.length : S.open.enz, openGel = !!S.open.gel, openCtl = !!S.open.ctl;
     const anyBlocked = D.lanes.some(isBlocked);
+    const hasControl = !!D.controlPath || Object.keys(D.controlCalls).length > 0;
+    const tab = (t, label, mark) => `<button class="tab ${S.tab === t ? "on" : ""}" data-tab="${t}">${label}${mark ? ` <span class="sub">${mark}</span>` : ""}</button>`;
     return `<p><a href="#/phage/${p.phage_id}">← ${esc(p.phage_name)}</a></p>
       <div class="card"><h2>${D.isNew ? "New digest" : "Digest"} · ${esc(p.phage_name)} <span class="sub">${esc(D.date || "")}</span></h2>
       ${genomeBox()}
       <details class="sec" data-sec="enz"${openEnz ? " open" : ""}><summary><b>Enzymes and lane order:</b> ${D.lanes.length ? `${esc(D.lanes.map(laneName).join(", "))} <span class="sub">(change)</span>` : '<span class="sub">tick the lanes on the gel and put them in order</span>'}</summary>${enzymePicker()}</details>
-      <h4>Result for each enzyme</h4>
-      ${laneStrip()}
-      ${anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}
-      <div class="two gels">
-        <div><b>Lab digest</b>${gel && !ownGel ? ` <span class="sub">from ${srcName(gel)}</span>` : ""}${gel ? `<a href="${esc(gel)}" target="_blank" rel="noopener"><img class="big" src="${esc(gel)}" alt="Lab digest"></a>` : '<div class="empty">No lab digest image yet. Add one under <b>Gel image, date and control</b> below.</div>'}
-          ${D.gelOriginal ? `<p class="tiny"><a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">Open the full-size original</a> (lab members only)</p>` : ""}</div>
-        <div><b>Virtual digest</b> <span class="sub">from the DNA sequence, same lane order</span>${g ? `<div>${gelOptBar()}</div>` : ""}${g ? virtualGel() : `<div class="empty">${S.genome && S.genome.loading ? "Reading the genome…" : "No genome sequence yet, so no virtual digest. Results can still be recorded now and compared later."}</div>`}</div>
-      </div>
-      <details class="sec" data-sec="gel"${openGel ? " open" : ""}><summary><b>Gel image, date and control</b> <span class="sub">${[D.date || "no date", ownGel ? "own gel image" : gel ? `gel from ${srcName(gel)}` : "no gel image", D.controlPath ? "control image" : ""].filter(Boolean).join(" · ")}</span></summary>${gelDetails()}</details>
+      <div class="tabs">${tab("digest", "Digest", enz.length ? (unset ? `${enz.length - unset}/${enz.length}` : "✓") : "")}${tab("control", "Control", hasControl ? (cunset ? `${enz.length - cunset}/${enz.length}` : "✓") : "optional")}</div>
+      ${ctl ? `<p class="sub">The control uses the same enzymes and lane order as the digest. It shows whether the enzymes and conditions worked, using a DNA known to cut (${esc(k.dnaName)}).</p>` : ""}
+      <h4>${ctl ? "Control result for each enzyme" : "Result for each enzyme"}</h4>
+      ${laneStrip(S.tab)}
+      ${!ctl && anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}
+      ${gelPair(S.tab)}
+      ${ctl
+        ? `<details class="sec" data-sec="ctl"${openCtl ? " open" : ""}><summary><b>Control image and control DNA</b> <span class="sub">${[D.controlPath ? "control image added" : "no control image", esc(k.dnaName)].join(" · ")}</span></summary>${controlDetails()}</details>`
+        : `<details class="sec" data-sec="gel"${openGel ? " open" : ""}><summary><b>Gel image and date</b> <span class="sub">${[D.date || "no date", k.ownImg ? "own gel image" : k.img ? `gel from ${srcName(k.img)}` : "no gel image"].join(" · ")}</span></summary>${gelDetails()}</details>`}
       <div class="savebar"><span>Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></span>
         <button class="primary" data-act="save"${S.busy ? " disabled" : ""}>Save</button>
         <span class="msg">${esc(S.busy || S.msg || (enz.length ? `${D.lanes.length} lane${D.lanes.length === 1 ? "" : "s"} · ${enz.length} enzyme${enz.length === 1 ? "" : "s"}${unset ? ` · ${unset} without a result` : ""}` : ""))}</span></div>
       </div>`;
+  }
+
+  // ---------- downloads ----------
+  const fileStem = (kind) => `${String(S.phage.phage_name || "phage").replace(/[^A-Za-z0-9_-]+/g, "_")}${S.D.date ? "_" + S.D.date : ""}${kind === "control" ? "_control" : ""}`;
+  function saveBlob(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+  function svgToCanvas(svg, scale) {
+    return new Promise((resolve, reject) => {
+      const img = new Image(), url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+      img.onload = () => { const c = document.createElement("canvas"); c.width = img.naturalWidth * scale; c.height = img.naturalHeight * scale; const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height); URL.revokeObjectURL(url); resolve(c); };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("The virtual digest could not be drawn as a picture.")); };
+      img.src = url;
+    });
+  }
+  // A lab image can be copied into a picture only if its server allows it (the lab's own storage does).
+  async function fetchImage(url) {
+    const r = await fetch(url, { mode: "cors" });
+    if (!r.ok) throw new Error(`download returned ${r.status}`);
+    const blob = await r.blob();
+    return { blob, bmp: await createImageBitmap(blob) };
+  }
+  async function download(what) {
+    const kind = S.tab, k = K(kind), stem = fileStem(kind);
+    try {
+      const vsvg = () => DG.gelSvg(gelLanes(kind), GEL_OPT);
+      if (what === "virtual") { const c = await svgToCanvas(vsvg(), 2); c.toBlob((b) => saveBlob(b, `${stem}_virtual.png`), "image/png"); return; }
+      let lab;
+      try { lab = await fetchImage(k.img); } catch (err) {
+        window.open(k.img, "_blank", "noopener");
+        S.msg = `The ${k.ctl ? "control" : "lab"} image is kept on ${srcName(k.img)}, which doesn't let this page copy it, so it was opened in a new tab: save it from there.${what === "both" ? " A combined picture needs the image uploaded to this site." : ""}`;
+        render(); return;
+      }
+      if (what === "lab") { saveBlob(lab.blob, `${stem}_lab.${/png/.test(lab.blob.type) ? "png" : "jpg"}`); return; }
+      const v = await svgToCanvas(vsvg(), 2);
+      const h = Math.max(lab.bmp.height, v.height), gap = 40, lw = Math.round(lab.bmp.width * (h / lab.bmp.height)), vw = Math.round(v.width * (h / v.height));
+      const c = document.createElement("canvas"); c.width = lw + gap + vw; c.height = h;
+      const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(lab.bmp, 0, 0, lw, h); g.drawImage(v, lw + gap, 0, vw, h);
+      c.toBlob((b) => saveBlob(b, `${stem}_lab_and_virtual.png`), "image/png");
+    } catch (err) { S.msg = `Download failed: ${err.message || err}`; render(); }
   }
 
   // ---------- render and routing ----------
@@ -448,11 +525,12 @@
     const D = S.D;
     if (!D) return;
     if (t.dataset.act === "save") { save(); return; }
-    if (t.dataset.act === "control") { await loadControl(); render(); return; }
     if (t.dataset.act === "togglevirtual") { D.showStoredVirtual = !D.showStoredVirtual; render(); return; }
     if (t.dataset.add) { addLane(t.dataset.add); render(); return; }
     if (t.dataset.control) { D.control = t.dataset.control === "true"; S.msg = ""; render(); return; }
-    if (t.dataset.call !== undefined) { const L = D.lanes[Number(t.dataset.call)]; if (L && !L.sp) { L.observed = t.dataset.val; S.msg = ""; render(); } return; }
+    if (t.dataset.call !== undefined) { const L = D.lanes[Number(t.dataset.call)]; if (L && !L.sp) { K(S.tab).set(L, t.dataset.val); S.msg = ""; render(); } return; }
+    if (t.dataset.tab) { S.tab = t.dataset.tab; S.msg = ""; if (S.tab === "control" && !S.control) { render(); await loadControl(); } render(); return; }
+    if (t.dataset.dl) { download(t.dataset.dl); return; }
     if (t.dataset.move !== undefined) { const i = Number(t.dataset.move), j = i + Number(t.dataset.dir); if (j >= 0 && j < D.lanes.length) { const x = D.lanes[i]; D.lanes[i] = D.lanes[j]; D.lanes[j] = x; render(); } return; }
     if (t.dataset.drop !== undefined) { const L = D.lanes[Number(t.dataset.drop)]; if (L && L.sp) D.lanes.splice(Number(t.dataset.drop), 1); else if (L) toggleEnzyme(L.id, false); render(); return; }
   });
@@ -462,7 +540,9 @@
     if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.page = 0; render(); return; }
     if (!D) return;
     if (t.dataset.pick) { toggleEnzyme(t.dataset.pick, t.checked); render(); return; }
-    if (t.dataset.gelopt) { GEL_OPT[t.dataset.gelopt] = t.checked; try { localStorage.setItem("rudner.gelopt", JSON.stringify(GEL_OPT)); } catch (err) { /* not remembered */ } render(); return; }
+    if (t.dataset.gelopt) { GEL_OPT[t.dataset.gelopt] = t.checked; saveGelOpt(); render(); return; }
+    if (t.dataset.guide !== undefined) { S.guide.on = t.checked; render(); return; }
+    if (t.dataset.gelnum) { saveGelOpt(); return; }
     if (t.dataset.sp) { if (t.checked) addLane(t.dataset.sp); else D.lanes = D.lanes.filter((L) => L.sp !== t.dataset.sp); render(); return; }
     if (t.dataset.f) { D[t.dataset.f] = t.value; return; }
     if (t.dataset.upload && t.files[0]) { uploadImage(t.dataset.upload, t.files[0]); return; }
@@ -471,6 +551,24 @@
       if (f.seq.length < 100) { S.msg = "No DNA sequence was found in that file."; } else { S.control = { seq: f.seq, name: f.name || t.files[0].name }; D.controlName = S.control.name.slice(0, 80); }
       render();
     }
+  });
+  // The height and run-time sliders redraw only the virtual gel, so the slider keeps moving under the pointer.
+  document.addEventListener("input", (ev) => {
+    const t = ev.target;
+    if (!t.dataset || !t.dataset.gelnum || !S.D) return;
+    if (t.dataset.gelnum === "height") GEL_OPT.height = Number(t.value); else GEL_OPT.run = Number(t.value) / 100;
+    const o = t.parentElement.querySelector("output"); if (o) o.textContent = t.dataset.gelnum === "height" ? `${t.value}px` : `${t.value}%`;
+    const v = document.getElementById("vgel"); if (v && K(S.tab).seq) v.innerHTML = virtualGel(S.tab);
+  });
+  // The guide line is dragged directly; its position is kept when the page redraws.
+  document.addEventListener("pointerdown", (ev) => {
+    const gline = ev.target.closest && ev.target.closest("#guide");
+    if (!gline) return;
+    ev.preventDefault();
+    const box = document.getElementById("gels"), top0 = box.getBoundingClientRect().top;
+    const move = (e2) => { S.guide.y = Math.max(0, Math.min(box.offsetHeight - 2, Math.round(e2.clientY - top0))); gline.style.top = S.guide.y + "px"; };
+    const up = () => { document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", up); };
+    document.addEventListener("pointermove", move); document.addEventListener("pointerup", up);
   });
   document.addEventListener("input", (ev) => {
     if (ev.target.dataset && ev.target.dataset.lf && ev.target.tagName === "INPUT") { S.filters[ev.target.dataset.lf] = ev.target.value; S.page = 0; render(); }

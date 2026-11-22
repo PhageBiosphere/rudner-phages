@@ -30,7 +30,7 @@
   }
 
   // lanes: [{label, kind: "ladder" | "bands", fragments: [bp]}]. Returns an SVG string, bands on a log scale.
-  // opts: height, gap (space between lanes; 0 makes them touch), numbers / names / scale (false hides those labels).
+  // opts: height, run (run time, 1 = standard), gap (space between lanes; 0 makes them touch), numbers / names / scale (false hides those labels).
   function gelSvg(lanes, opts) {
     opts = opts || {};
     const H = opts.height || 300, laneW = 46, gap = opts.gap == null ? 0 : opts.gap, padB = 10;
@@ -38,12 +38,15 @@
     const top = 6 + (showNum ? 12 : 0) + (showName ? 12 : 0), left = showScale ? 40 : 4;
     const all = lanes.flatMap((l) => (l.kind === "ladder" ? LADDER_BP : l.fragments || []));
     const maxBp = Math.max(10000, ...all), minBp = 100;
-    const y = (bp) => top + 8 + (Math.log10(maxBp) - Math.log10(Math.max(bp, minBp))) / (Math.log10(maxBp) - Math.log10(minBp)) * (H - 20);
+    // run: how long the gel ran. 1 puts the 100 bp band at the bottom; more moves everything further and small bands run off.
+    const run = opts.run || 1;
+    const y = (bp) => top + 8 + (Math.log10(maxBp) - Math.log10(Math.max(bp, minBp))) / (Math.log10(maxBp) - Math.log10(minBp)) * (H - 20) * run;
+    const onGel = (bp) => y(bp) <= top + H - 3;
     const W = left + lanes.length * laneW + Math.max(0, lanes.length - 1) * gap + 4;
     let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${top + H + padB}" width="${W}" height="${top + H + padB}" role="img" aria-label="Virtual digest">`;
     if (showScale) {
       s += `<g font-family="system-ui,Arial,sans-serif" font-size="9" fill="#5f6368" text-anchor="end">`;
-      for (const bp of LADDER_BP) s += `<text x="${left - 5}" y="${(y(bp) + 3).toFixed(1)}">${bp >= 1000 ? bp / 1000 + " kb" : bp}</text>`;
+      for (const bp of LADDER_BP.filter(onGel)) s += `<text x="${left - 5}" y="${(y(bp) + 3).toFixed(1)}">${bp >= 1000 ? bp / 1000 + " kb" : bp}</text>`;
       s += `</g>`;
     }
     s += `<rect x="${left}" y="${top}" width="${W - left - 4}" height="${H}" rx="4" fill="${gap ? "none" : "#111"}"/>`;
@@ -53,7 +56,7 @@
       if (showName) s += `<text x="${x + laneW / 2}" y="${top - 4}" font-family="system-ui,Arial,sans-serif" font-size="9.5" fill="#202124" text-anchor="middle">${esc(l.label)}</text>`;
       if (gap) s += `<rect data-lane="1" x="${x}" y="${top}" width="${laneW}" height="${H}" rx="4" fill="#111"/>`;
       else s += `<rect data-lane="1" x="${x}" y="${top}" width="${laneW}" height="${H}" fill="none"><title>${i + 1}. ${esc(l.label)}</title></rect>`;
-      const bands = l.kind === "ladder" ? LADDER_BP : (l.fragments || []).slice(0, 60);
+      const bands = (l.kind === "ladder" ? LADDER_BP : (l.fragments || []).slice(0, 80)).filter(onGel);
       for (const bp of bands) {
         const thick = l.kind === "ladder" && (bp === 3000 || bp === 1000) ? 3 : 2;
         s += `<rect x="${x + 5}" y="${(y(bp) - thick / 2).toFixed(1)}" width="${laneW - 10}" height="${thick}" fill="${l.kind === "ladder" ? "#cfd8dc" : "#fff"}"><title>${esc(l.label)}: ${Number(bp).toLocaleString()} bp</title></rect>`;

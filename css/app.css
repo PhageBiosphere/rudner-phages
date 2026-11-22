@@ -94,3 +94,13 @@ table.results tr.cmp td{font-size:11.5px;border-bottom:none}table.results tr.cmp
 table.results .cb{display:flex;justify-content:center;gap:2px}
 table.results .call{width:23px;height:24px;padding:0;margin:0;font-size:13px;line-height:1}
 .gelopt{display:inline-flex;gap:12px;align-items:center;font-size:12px;color:var(--sub);margin:4px 0}.gelopt label.check{font-size:12px}
+/* gel tools, guide line, tabs on the digest page */
+.tools{gap:8px 18px;margin:10px 0 2px}.tools input[type=range]{display:inline;width:110px;margin:0 4px;padding:0;vertical-align:middle}.tools output{min-width:42px;display:inline-block}
+.dl{font-size:12px;color:var(--sub);display:inline-flex;gap:5px;align-items:center}
+.gels{position:relative}
+.guide{position:absolute;left:0;right:0;height:0;border-top:2px dashed #e8710a;z-index:5;cursor:ns-resize;touch-action:none}
+.guide::before{content:"";position:absolute;left:0;right:0;top:-8px;height:16px}
+.guide span{position:absolute;right:0;top:-10px;background:#e8710a;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;user-select:none}
+.gels img.big{user-select:none}
+.tabs{margin-top:14px}
+[hidden]{display:none!important}
