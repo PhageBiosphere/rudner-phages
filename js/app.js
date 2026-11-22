@@ -15,7 +15,8 @@
     phage: null, digests: [], results: [],
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
-    D: null, step: "plan", msg: "", busy: "", listFilter: "", listNeed: false,
+    D: null, msg: "", busy: "", open: { enz: null, gel: null },
+    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", cluster: "", genome: "", digest: "" }, pageSize: 25, page: 0,
     control: null          // {seq, name}
   };
 
@@ -36,7 +37,8 @@
   // Images already recorded for the phage itself (for most phages these are the PhagesDB digest pictures).
   const srcName = (u) => (/phagesdb\.org/i.test(u || "") ? "PhagesDB" : "the phage record");
   const phageGel = () => (S.phage && S.phage.restriction_digest_image_url) || "";
-  const phageVirtual = () => (S.phage && S.phage.virtual_digest_image_url) || "";
+  // The virtual digest is always drawn from the DNA sequence so every phage looks the same; PhagesDB virtual images are not used.
+  const phageVirtual = () => "";
   const chip = (text, kind) => `<span class="chip ${kind || ""}">${esc(text)}</span>`;
 
   // ---------- data ----------
@@ -135,7 +137,7 @@
       for (const r of rest) if (!D.lanes.some((L) => L.id === r.restriction_enzyme_id)) D.lanes.push(mk(r.restriction_enzyme_id));
     }
     S.D = D; S.msg = "";
-    S.step = !x ? "plan" : D.gelPath || D.legacyGelUrl || phageGel() ? "compare" : "lab";
+    S.open = { enz: null, gel: null };
   }
   function addLane(kind) {
     const L = S.D.lanes;
@@ -234,10 +236,10 @@
       for (const k of gone) jobs.push(sb.from("restriction_digest_results").delete().eq("restriction_digest_result_id", D.saved.get(k).restriction_digest_result_id));
       const bad = (await Promise.all(jobs)).find((r) => r.error);
       if (bad) throw bad.error;
-      const keepStep = S.step, id = D.id, keepGenome = S.genome, keepGenes = S.genes;
+      const keepOpen = S.open, id = D.id, keepGenome = S.genome, keepGenes = S.genes;
       await loadBase(); await loadPhage(S.phage.phage_id);
       S.genome = keepGenome; S.genes = keepGenes;
-      openDigest(id); S.step = keepStep;
+      openDigest(id); S.open = keepOpen;
       const unset = S.D.lanes.filter((L) => !L.sp && !L.observed).length;
       S.msg = unset ? `Saved. ${unset} enzyme${unset === 1 ? "" : "s"} still without a result; come back to finish.` : "Saved.";
     } catch (err) { S.msg = `Not saved: ${err.message || err}`; }
@@ -254,18 +256,31 @@
   function viewNoAccess() {
     return `<div class="card narrow"><h2>No lab access</h2><p>You are signed in as ${esc(S.user.email || "")}, but this account is not a member of the lab. Ask a lab owner to add it.</p></div>`;
   }
+  function listRows() {
+    const F = S.filters, has = (v, f) => !f || String(v || "").toLowerCase().includes(f.trim().toLowerCase());
+    const dn = (p) => (S.digestIndex.get(p.phage_id) || []).length;
+    const cl = (p) => p.phagesdb_subcluster || p.phagesdb_cluster || "";
+    let rows = S.catalog.filter((p) => has(p.phage_name, F.name) && has(p.lab_phage_id, F.lab) && has(`${p.host_genus || ""} ${p.host_species || ""}`, F.host) && has(cl(p), F.cluster)
+      && (!F.genome || (F.genome === "yes") === !!p.genome_length_bp) && (!F.digest || (F.digest === "yes") === dn(p) > 0));
+    const key = { name: (p) => (p.phage_name || "").toLowerCase(), lab: (p) => (p.lab_phage_id || "").toLowerCase(), host: (p) => (p.host_genus || "").toLowerCase(), cluster: (p) => cl(p).toLowerCase(), genome: (p) => p.genome_length_bp || 0, digest: dn }[S.sort.k];
+    rows = rows.slice().sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * S.sort.dir || (a.phage_name || "").localeCompare(b.phage_name || ""); });
+    return rows;
+  }
   function viewList() {
-    const f = S.listFilter.trim().toLowerCase();
-    let rows = S.catalog.filter((p) => !f || `${p.phage_name} ${p.lab_phage_id} ${p.host_genus} ${p.phagesdb_cluster}`.toLowerCase().includes(f));
-    if (S.listNeed) rows = rows.filter((p) => !(S.digestIndex.get(p.phage_id) || []).length);
-    const shown = rows.slice(0, 200);
-    return `<div class="card"><h2>Phages</h2>
-      <div class="row"><input id="filter" placeholder="Search by name, lab ID, host or cluster" value="${esc(S.listFilter)}" style="flex:1 1 280px">
-      <label class="check"><input type="checkbox" id="need"${S.listNeed ? " checked" : ""}> only phages with no digest yet</label></div>
-      <p class="sub">${fmt(rows.length)} of ${fmt(S.catalog.length)} phages${rows.length > shown.length ? `, first ${shown.length} shown` : ""}.</p>
-      <table class="list"><thead><tr><th>Phage</th><th>Lab ID</th><th>Host</th><th>Cluster</th><th>Genome</th><th>Restriction digests</th></tr></thead><tbody>
-      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; const st = d.map((x) => stageOf(x, null)); return `<tr data-go="#/phage/${p.phage_id}"><td><b>${esc(p.phage_name || "")}</b></td><td>${esc(p.lab_phage_id || "")}</td><td>${esc(p.host_genus || "")}</td><td>${esc(p.phagesdb_subcluster || p.phagesdb_cluster || "")}</td><td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, st.some((s) => s.lab) ? "ok" : "warn") : chip("none", "mute")}</td></tr>`; }).join("")}
-      </tbody></table></div>`;
+    const rows = listRows(), F = S.filters, n = S.pageSize, pages = Math.max(1, Math.ceil(rows.length / n));
+    S.page = Math.min(S.page, pages - 1);
+    const shown = rows.slice(S.page * n, S.page * n + n);
+    const th = (k, label) => `<th data-sort="${k}" title="Sort by this column">${label} <span class="arrow">${S.sort.k === k ? (S.sort.dir > 0 ? "▲" : "▼") : ""}</span></th>`;
+    const tf = (k, ph) => `<td><input data-lf="${k}" value="${esc(F[k])}" placeholder="${ph}"></td>`;
+    const sf = (k, yes, no) => `<td><select data-lf="${k}"><option value="">all</option><option value="yes"${F[k] === "yes" ? " selected" : ""}>${yes}</option><option value="no"${F[k] === "no" ? " selected" : ""}>${no}</option></select></td>`;
+    const pager = `<div class="row pager"><label class="check">Rows <select id="pagesize">${[15, 25, 50, 100].map((v) => `<option${v === n ? " selected" : ""}>${v}</option>`).join("")}</select></label>
+      <button data-page="-1"${S.page ? "" : " disabled"}>◀ Previous</button><span class="sub">Page ${S.page + 1} of ${pages} · ${fmt(rows.length)} of ${fmt(S.catalog.length)} phages</span><button data-page="1"${S.page < pages - 1 ? "" : " disabled"}>Next ▶</button>
+      ${Object.values(F).some(Boolean) ? '<button data-act="clearfilters">Clear filters</button>' : ""}</div>`;
+    return `<div class="card"><h2>Phages</h2>${pager}
+      <table class="list sortable"><thead><tr>${th("name", "Phage")}${th("lab", "Lab ID")}${th("host", "Host")}${th("cluster", "Cluster")}${th("genome", "Genome")}${th("digest", "Restriction digests")}</tr>
+      <tr class="filters">${tf("name", "filter")}${tf("lab", "filter")}${tf("host", "filter")}${tf("cluster", "filter")}${sf("genome", "has a sequence", "no sequence")}${sf("digest", "has a digest", "none yet")}</tr></thead><tbody>
+      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}"><td><b>${esc(p.phage_name || "")}</b></td><td>${esc(p.lab_phage_id || "")}</td><td>${esc(p.host_genus || "")}</td><td>${esc(p.phagesdb_subcluster || p.phagesdb_cluster || "")}</td><td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") : chip("none", "mute")}</td></tr>`; }).join("") || '<tr><td colspan="6" class="sub">No phage matches these filters.</td></tr>'}
+      </tbody></table>${pager}</div>`;
   }
   function viewPhage() {
     const p = S.phage;
@@ -284,19 +299,6 @@
       </div>`;
   }
 
-  function lanesTable(withCalls) {
-    const D = S.D, last = D.lanes.length - 1;
-    if (!D.lanes.length) return '<p class="sub">No lanes yet.</p>';
-    return `<table class="lanes"><thead><tr><th>Lane</th><th>In the lane</th><th>Sites</th>${withCalls ? "<th>Virtual</th><th>Lab result</th><th></th>" : "<th></th>"}</tr></thead><tbody>${D.lanes.map((L, i) => {
-      const mv = `<button class="mini" data-move="${i}" data-dir="-1"${i ? "" : " disabled"} title="Move left on the gel">◀</button> <b>${i + 1}</b> <button class="mini" data-move="${i}" data-dir="1"${i < last ? "" : " disabled"} title="Move right on the gel">▶</button>`;
-      if (L.sp) return `<tr class="sp"><td>${mv}</td><td colspan="${withCalls ? 4 : 2}">${laneName(L)}</td><td><button class="mini" data-drop="${i}" title="Remove this lane">✕</button></td></tr>`;
-      const c = cutsOf(L.id), v = virtualCall(L.id);
-      const sites = c ? c.sites : (D.saved.get(L.id) || {}).predicted_site_count;
-      if (!withCalls) return `<tr><td>${mv}</td><td><b>${esc(laneName(L))}</b></td><td>${sites == null ? "—" : sites}</td><td>${D.saved.has(L.id) && S.role !== "owner" ? "" : `<button class="mini" data-drop="${i}" title="Remove this lane">✕</button>`}</td></tr>`;
-      const verdict = !L.observed ? '<span class="t-warn">not set</span>' : !v ? "" : isBlocked(L) ? '<b class="t-bad">blocked</b>' : v === L.observed ? '<span class="t-ok">as predicted</span>' : L.observed === "Partial digestion" ? '<span class="t-warn">partial</span>' : L.observed === "Uninterpretable" ? '<span class="sub">unclear</span>' : '<span class="t-warn">differs</span>';
-      return `<tr><td>${mv}</td><td><b>${esc(laneName(L))}</b></td><td>${sites == null ? "—" : sites}</td><td>${esc(v || "—")}${c && !c.sites ? '<div class="tiny">0 sites: should stay uncut</div>' : ""}</td><td class="calls">${CALLS.map((k) => `<button class="call ${L.observed === k[0] ? "on " + k[2] : L.observed ? "" : "unset"}" data-call="${i}" data-val="${k[0]}">${k[1]}</button>`).join("")}</td><td>${verdict}</td></tr>`;
-    }).join("")}</tbody></table>`;
-  }
   function virtualGel() {
     const D = S.D;
     if (!S.genome || !S.genome.seq) return "";
@@ -318,45 +320,62 @@
       ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${title}"></a>${from}` : '<div class="empty">No image yet. JPEG or PNG; it is resized before upload.</div>'}</div>`;
   }
 
-  function stepPlan() {
+  function orderTable() {
+    const D = S.D, last = D.lanes.length - 1;
+    if (!D.lanes.length) return '<p class="sub">No lanes yet. Tick enzymes below, or type the lane order.</p>';
+    return `<table class="lanes"><thead><tr><th>Lane</th><th>In the lane</th><th>Sites</th><th></th></tr></thead><tbody>${D.lanes.map((L, i) => {
+      const mv = `<button class="mini" data-move="${i}" data-dir="-1"${i ? "" : " disabled"} title="Move one lane to the left on the gel">◀</button> <b>${i + 1}</b> <button class="mini" data-move="${i}" data-dir="1"${i < last ? "" : " disabled"} title="Move one lane to the right on the gel">▶</button>`;
+      const c = L.sp ? null : cutsOf(L.id), sites = L.sp ? "" : c ? c.sites : ((D.saved.get(L.id) || {}).predicted_site_count ?? "—");
+      const locked = !L.sp && D.saved.has(L.id) && S.role !== "owner";
+      return `<tr class="${L.sp ? "sp" : ""}"><td>${mv}</td><td>${L.sp ? laneName(L) : `<b>${esc(laneName(L))}</b>`}</td><td>${sites}</td><td>${locked ? '<span class="tiny" title="This enzyme has a saved result; only an owner can remove it">saved</span>' : `<button class="mini" data-drop="${i}" title="Remove this lane">✕</button>`}</td></tr>`;
+    }).join("")}</tbody></table>`;
+  }
+  function enzymePicker() {
     const D = S.D, g = S.genome && S.genome.seq;
     const rows = S.enzymes.map((z) => {
       const c = g ? DG.digest(S.genome.seq, z.recognition_sequence, S.genome.circular) : null;
-      const u = c ? DG.usefulness(c.sites) : null, on = D.lanes.some((L) => L.id === z.restriction_enzyme_id);
-      const lock = D.saved.has(z.restriction_enzyme_id) && S.role !== "owner";
-      return { z, c, u, on, lock };
+      return { z, c, u: c ? DG.usefulness(c.sites) : null, on: D.lanes.some((L) => L.id === z.restriction_enzyme_id), lock: D.saved.has(z.restriction_enzyme_id) && S.role !== "owner" };
     });
     if (g) rows.sort((a, b) => b.u.score - a.u.score || a.z.enzyme_name.localeCompare(b.z.enzyme_name));
     const diag = S.genes && S.genes.hits.length;
-    return `<h3>1 · Plan: choose the enzymes</h3>${genomeBox()}
-      <table class="list plan"><thead><tr><th></th><th>Enzyme</th><th>Recognition</th><th>Sites</th><th>Predicted fragments (bp)</th><th>Use</th></tr></thead><tbody>
-      ${rows.map((r) => `<tr class="${r.on ? "sel" : ""}"><td><input type="checkbox" data-pick="${r.z.restriction_enzyme_id}"${r.on ? " checked" : ""}${r.lock ? ' disabled title="Already has a saved result"' : ""}></td><td><b>${esc(r.z.enzyme_name)}</b></td><td class="mono">${esc(r.z.recognition_sequence)}</td><td>${r.c ? r.c.sites : "—"}</td><td class="tiny">${r.c ? (r.c.sites ? r.c.fragments.slice(0, 8).map(fmt).join(", ") + (r.c.fragments.length > 8 ? " …" : "") : "uncut") : ""}</td><td class="tiny">${r.u ? esc(r.u.note) : ""}${r.z.modification_sensitivity ? `<div>${esc(r.z.modification_sensitivity)}</div>` : ""}${diag && r.z.diagnostic_group ? `<div class="t-warn">Diagnostic for DNA modification (${esc(r.z.diagnostic_group)})</div>` : ""}</td></tr>`).join("")}
-      </tbody></table>
-      <h4>Virtual digest of the chosen enzymes</h4>${g ? virtualGel() : '<p class="sub">Shown once a genome sequence is available.</p>'}
-      ${imageBox("virtual", "Virtual digest image (optional)", D.virtualPath, phageVirtual())}`;
+    return `<div class="two">
+      <div><b>Lanes, in gel order</b>
+        <div class="row"><input id="order" value="${esc(D.orderText)}" placeholder="Type them as printed on the gel: ladder, uncut, BamHI, SalI, …" style="flex:1 1 240px"><button data-act="order">Set lanes</button></div>
+        ${D.orderMsg ? `<p class="t-warn tiny">${esc(D.orderMsg)}</p>` : ""}
+        <div class="row"><button data-add="ladder">+ Ladder lane</button><button data-add="uncut">+ Uncut DNA lane</button></div>
+        ${orderTable()}</div>
+      <div><b>Enzymes</b> <span class="sub">tick the ones on the gel${g ? "; most useful first" : ""}</span>
+        <table class="list plan"><thead><tr><th></th><th>Enzyme</th><th>Recognition</th><th>Sites</th><th>Predicted fragments (bp)</th><th>Use</th></tr></thead><tbody>
+        ${rows.map((r) => `<tr class="${r.on ? "sel" : ""}"><td><input type="checkbox" data-pick="${r.z.restriction_enzyme_id}"${r.on ? " checked" : ""}${r.lock ? ' disabled title="Already has a saved result"' : ""}></td><td><b>${esc(r.z.enzyme_name)}</b></td><td class="mono">${esc(r.z.recognition_sequence)}</td><td>${r.c ? r.c.sites : "—"}</td><td class="tiny">${r.c ? (r.c.sites ? r.c.fragments.slice(0, 6).map(fmt).join(", ") + (r.c.fragments.length > 6 ? " …" : "") : "uncut") : ""}</td><td class="tiny">${r.u ? esc(r.u.note) : ""}${r.z.modification_sensitivity ? `<div>${esc(r.z.modification_sensitivity)}</div>` : ""}${diag && r.z.diagnostic_group ? `<div class="t-warn">Diagnostic for DNA modification (${esc(r.z.diagnostic_group)})</div>` : ""}</td></tr>`).join("")}
+        </tbody></table></div></div>`;
   }
-  function stepLab() {
+  const CALL_BTN = [["Digestion", "✓", "ok", "Digests: the lab gel shows the enzyme cut the DNA"], ["Partial digestion", "~", "warn", "Partial digestion: some DNA cut, some left uncut"], ["No digestion", "✗", "bad", "Does not digest: the DNA is uncut in the lab gel"], ["Uninterpretable", "?", "mute", "Undetermined: the lane cannot be read"]];
+  // The chosen lanes in gel order; under each enzyme, one click records what the lab gel shows.
+  function laneStrip() {
     const D = S.D;
-    return `<h3>2 · Lab: the gel and its lanes</h3>
-      <div class="row fields">
+    if (!D.lanes.length) return '<div class="note warn">No enzymes chosen yet. Open <b>Restriction enzymes</b> above to choose them and put them in gel order.</div>';
+    return `<div class="strip">${D.lanes.map((L, i) => {
+      if (L.sp) return `<div class="lanecard sp"><div class="ln">${i + 1}</div><div class="nm">${laneName(L)}</div></div>`;
+      const c = cutsOf(L.id), v = virtualCall(L.id);
+      const verdict = !L.observed ? '<span class="t-warn">not set</span>' : !v ? "&nbsp;" : isBlocked(L) ? '<b class="t-bad">blocked</b>' : v === L.observed ? '<span class="t-ok">as predicted</span>' : L.observed === "Partial digestion" ? '<span class="t-warn">partial</span>' : L.observed === "Uninterpretable" ? '<span class="sub">unclear</span>' : '<span class="t-warn">differs</span>';
+      return `<div class="lanecard${isBlocked(L) ? " blk" : ""}"><div class="ln">${i + 1}</div><div class="nm" title="${esc(enzyme(L.id).recognition_sequence || "")}">${esc(laneName(L))}</div>
+        <div class="st" title="${c ? (c.sites ? "Recognition sites in this genome" : "No sites in this genome: this lane should stay uncut") : "No genome sequence yet"}">${c ? `${c.sites} site${c.sites === 1 ? "" : "s"}` : "&nbsp;"}</div>
+        <div class="cb">${CALL_BTN.map((k) => `<button class="call ${L.observed === k[0] ? "on " + k[2] : L.observed ? "" : "unset"}" data-call="${i}" data-val="${k[0]}" title="${k[3]}" aria-label="${k[0]}">${k[1]}</button>`).join("")}</div>
+        <div class="vd">${verdict}</div></div>`;
+    }).join("")}</div>`;
+  }
+  function gelDetails() {
+    const D = S.D;
+    return `<div class="row fields">
         <label>Date of the digest<input type="date" data-f="date" value="${esc(D.date)}"></label>
         <label>Ladder<select data-f="ladder"><option value="">— not recorded —</option>${CFG.LADDERS.concat(D.ladder && !CFG.LADDERS.includes(D.ladder) ? [D.ladder] : []).map((l) => `<option${l === D.ladder ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
       </div>
       <div class="two">
-        <div>${imageBox("gel", "Lab digest", D.gelPath, D.legacyGelUrl || phageGel())}
+        <div>${imageBox("gel", "Lab digest image", D.gelPath, D.legacyGelUrl || phageGel())}
           <label class="full">Link to the full-size original (SharePoint / OneDrive) <span class="sub">— lab members only</span><input type="url" data-f="gelOriginal" value="${esc(D.gelOriginal)}" placeholder="https://…"></label></div>
-        <div><b>Lanes, in gel order</b>
-          <div class="row"><input id="order" value="${esc(D.orderText)}" placeholder="Type them as printed on the gel: ladder, uncut, BamHI, SalI, …" style="flex:1 1 240px"><button data-act="order">Set lanes</button></div>
-          ${D.orderMsg ? `<p class="t-warn tiny">${esc(D.orderMsg)}</p>` : ""}
-          <div class="row"><button data-add="ladder">+ Ladder lane</button><button data-add="uncut">+ Uncut DNA lane</button><span class="sub">Enzymes are ticked in step 1, or typed above.</span></div>
-          ${lanesTable(false)}</div>
-      </div>
-      <h4>Control digest <span class="sub">(optional)</span></h4>
-      <div class="two">
-        <div>${imageBox("control", "Control digest", D.controlPath, "")}
-          <label class="full">Link to the full-size original <span class="sub">— lab members only</span><input type="url" data-f="controlOriginal" value="${esc(D.controlOriginal)}" placeholder="https://…"></label></div>
-        <div><div class="row fields"><label>Control DNA<input data-f="controlName" value="${esc(D.controlName)}"></label>
-          <label>Did the control digest as expected?<span class="seg">${[["true", "Yes"], ["false", "No"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></label></div>
+        <div>${imageBox("control", "Control digest image (optional)", D.controlPath, "")}
+          <label class="full">Link to the full-size original of the control <span class="sub">— lab members only</span><input type="url" data-f="controlOriginal" value="${esc(D.controlOriginal)}" placeholder="https://…"></label>
+          <label>Control DNA<input data-f="controlName" value="${esc(D.controlName)}"></label>
           <div id="controlgel">${controlGel()}</div></div>
       </div>`;
   }
@@ -369,36 +388,27 @@
       ${enz.length ? `<div class="gelscroll">${DG.gelSvg([{ label: "Ladder", kind: "ladder" }].concat(enz.map((L) => ({ label: laneName(L), kind: "bands", fragments: DG.digest(c.seq, enzyme(L.id).recognition_sequence, false).fragments }))), { height: 220 })}</div>` : '<p class="sub">Add enzymes to see their expected control pattern.</p>'}
       <label class="btn">Use a different control sequence (FASTA file)<input type="file" accept=".fasta,.fa,.fna,.txt" data-controlfasta hidden></label>`;
   }
-  function stepCompare() {
-    const D = S.D, ownGel = publicUrl(D.gelPath) || D.legacyGelUrl, gel = ownGel || phageGel(), stored = publicUrl(D.virtualPath) || phageVirtual();
-    const g = S.genome && S.genome.seq;
-    const anyBlocked = D.lanes.some(isBlocked);
-    const showStored = stored && (D.showStoredVirtual || !g);
-    return `<h3>3 · Compare: lab against virtual</h3>
-      ${!gel ? '<div class="note warn">No lab gel image yet. Add it in step 2; you can still enter results from the gel in front of you.</div>' : ""}
-      ${genomeBox()}
-      <div class="two">
-        <div><b>Lab digest</b>${gel && !ownGel ? ` <span class="sub">from ${srcName(gel)}</span>` : ""}${gel ? `<a href="${esc(gel)}" target="_blank" rel="noopener"><img class="big" src="${esc(gel)}" alt="Lab digest"></a>` : '<div class="empty">No image</div>'}
-          ${D.gelOriginal ? `<p class="tiny"><a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">Open the full-size original</a> (lab members only)</p>` : ""}</div>
-        <div><div class="row"><b>Virtual digest</b>${stored && g ? `<button class="mini" data-act="togglevirtual">${showStored ? "Show predicted bands in lane order" : "Show the stored image"}</button>` : ""}</div>
-          ${showStored ? `<img class="big" src="${esc(stored)}" alt="Virtual digest">` : g ? virtualGel() : '<div class="empty">No genome sequence yet, so no virtual digest. Results can still be recorded and compared later.</div>'}</div>
-      </div>
-      <h4>Result for each enzyme</h4>${lanesTable(true)}
-      ${anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that below.</div>' : ""}
-      <p class="row">Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span>
-        ${D.controlPath ? `<a href="${esc(publicUrl(D.controlPath))}" target="_blank" rel="noopener">view the control gel</a>` : ""}</p>`;
-  }
   function viewDigest() {
     const D = S.D, p = S.phage;
     const enz = D.lanes.filter((L) => !L.sp), unset = enz.filter((L) => !L.observed).length;
-    const done = { plan: enz.length > 0, lab: !!(D.gelPath || D.legacyGelUrl || phageGel()), compare: enz.length > 0 && !unset && D.control != null };
-    const tab = (k, label) => `<button class="tab ${S.step === k ? "on" : ""}" data-step="${k}">${done[k] ? "✓ " : ""}${label}</button>`;
+    const ownGel = publicUrl(D.gelPath) || D.legacyGelUrl, gel = ownGel || phageGel(), g = S.genome && S.genome.seq;
+    const openEnz = S.open.enz == null ? !D.lanes.length : S.open.enz, openGel = S.open.gel == null ? false : S.open.gel;
+    const anyBlocked = D.lanes.some(isBlocked);
     return `<p><a href="#/phage/${p.phage_id}">← ${esc(p.phage_name)}</a></p>
       <div class="card"><h2>${D.isNew ? "New digest" : "Digest"} · ${esc(p.phage_name)} <span class="sub">${esc(D.date || "")}</span></h2>
-      <p class="sub">The three steps can be done in any order and saved at any point. Start with step 1 if you have the sequence, or step 2 if you ran the gel first.</p>
-      <div class="tabs">${tab("plan", "1 Plan")}${tab("lab", "2 Lab")}${tab("compare", "3 Compare")}</div>
-      <div class="step">${S.step === "plan" ? stepPlan() : S.step === "lab" ? stepLab() : stepCompare()}</div>
-      <div class="savebar"><button class="primary" data-act="save"${S.busy ? " disabled" : ""}>Save</button>
+      ${genomeBox()}
+      <details class="sec" data-sec="enz"${openEnz ? " open" : ""}><summary><b>Restriction enzymes</b> <span class="sub">${D.lanes.length ? `${D.lanes.length} lane${D.lanes.length === 1 ? "" : "s"}: ${esc(D.lanes.map(laneName).join(" · "))}` : "choose the enzymes and put the lanes in gel order"}</span></summary>${enzymePicker()}</details>
+      <h4>Result for each enzyme</h4>
+      ${laneStrip()}
+      ${anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}
+      <div class="two gels">
+        <div><b>Lab digest</b>${gel && !ownGel ? ` <span class="sub">from ${srcName(gel)}</span>` : ""}${gel ? `<a href="${esc(gel)}" target="_blank" rel="noopener"><img class="big" src="${esc(gel)}" alt="Lab digest"></a>` : '<div class="empty">No lab digest image yet. Add one under <b>Gel image, date and control</b> below.</div>'}
+          ${D.gelOriginal ? `<p class="tiny"><a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">Open the full-size original</a> (lab members only)</p>` : ""}</div>
+        <div><b>Virtual digest</b> <span class="sub">from the DNA sequence, same lane order</span>${g ? virtualGel() : `<div class="empty">${S.genome && S.genome.loading ? "Reading the genome…" : "No genome sequence yet, so no virtual digest. Results can still be recorded now and compared later."}</div>`}</div>
+      </div>
+      <details class="sec" data-sec="gel"${openGel ? " open" : ""}><summary><b>Gel image, date and control</b> <span class="sub">${[D.date || "no date", ownGel ? "own gel image" : gel ? `gel from ${srcName(gel)}` : "no gel image", D.controlPath ? "control image" : ""].filter(Boolean).join(" · ")}</span></summary>${gelDetails()}</details>
+      <div class="savebar"><span>Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></span>
+        <button class="primary" data-act="save"${S.busy ? " disabled" : ""}>Save</button>
         <span class="msg">${esc(S.busy || S.msg || (enz.length ? `${D.lanes.length} lane${D.lanes.length === 1 ? "" : "s"} · ${enz.length} enzyme${enz.length === 1 ? "" : "s"}${unset ? ` · ${unset} without a result` : ""}` : ""))}</span></div>
       </div>`;
   }
@@ -406,14 +416,14 @@
   // ---------- render and routing ----------
   let route = { name: "list" };
   function render() {
-    const keep = document.activeElement && document.activeElement.id === "filter" ? document.activeElement.selectionStart : null;
+    const ae = document.activeElement, keepKey = ae && ae.dataset && ae.dataset.lf && ae.tagName === "INPUT" ? ae.dataset.lf : null, keep = keepKey ? ae.selectionStart : null;
     userBox.innerHTML = S.user ? `${esc(S.name || S.user.email || "")}${S.role ? ` · ${esc(S.role)}` : ""} <button id="signout">Sign out</button>` : "";
     if (!S.user) app.innerHTML = viewSignIn(S.msg);
     else if (!S.role || S.role === "viewer") app.innerHTML = viewNoAccess();
     else if (route.name === "digest" && S.D) app.innerHTML = viewDigest();
     else if (route.name === "phage" && S.phage) app.innerHTML = viewPhage();
     else app.innerHTML = viewList();
-    if (keep != null) { const f = document.getElementById("filter"); if (f) { f.focus(); f.setSelectionRange(keep, keep); } }
+    if (keepKey) { const f = app.querySelector(`input[data-lf="${keepKey}"]`); if (f) { f.focus(); f.setSelectionRange(keep, keep); } }
   }
   async function go() {
     const h = location.hash.replace(/^#\/?/, "").split("/");
@@ -449,13 +459,15 @@
     await loadSession(); go();
   });
   document.addEventListener("click", async (ev) => {
-    const t = ev.target.closest("button, a.btn, tr[data-go]");
+    const t = ev.target.closest("button, a.btn, th[data-sort], tr[data-go]");
     if (!t) return;
+    if (t.dataset.sort) { S.sort = { k: t.dataset.sort, dir: S.sort.k === t.dataset.sort ? -S.sort.dir : 1 }; S.page = 0; render(); return; }
+    if (t.dataset.page) { S.page = Math.max(0, S.page + Number(t.dataset.page)); render(); return; }
+    if (t.dataset.act === "clearfilters") { for (const k in S.filters) S.filters[k] = ""; S.page = 0; render(); return; }
     if (t.id === "signout") { await sb.auth.signOut(); S.user = null; S.role = null; S.catalog = []; S.phage = null; S.D = null; render(); return; }
     if (t.dataset.go) { location.hash = t.dataset.go; return; }
     const D = S.D;
     if (!D) return;
-    if (t.dataset.step) { S.step = t.dataset.step; S.msg = ""; render(); return; }
     if (t.dataset.act === "save") { save(); return; }
     if (t.dataset.act === "order") { setOrder(document.getElementById("order").value); render(); return; }
     if (t.dataset.act === "control") { await loadControl(); render(); return; }
@@ -468,7 +480,8 @@
   });
   document.addEventListener("change", async (ev) => {
     const t = ev.target, D = S.D;
-    if (t.id === "need") { S.listNeed = t.checked; render(); return; }
+    if (t.id === "pagesize") { S.pageSize = Number(t.value) || 25; S.page = 0; render(); return; }
+    if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.page = 0; render(); return; }
     if (!D) return;
     if (t.dataset.pick) { toggleEnzyme(t.dataset.pick, t.checked); render(); return; }
     if (t.dataset.f) { D[t.dataset.f] = t.value; return; }
@@ -480,10 +493,11 @@
     }
   });
   document.addEventListener("input", (ev) => {
-    if (ev.target.id === "filter") { S.listFilter = ev.target.value; render(); }
+    if (ev.target.dataset && ev.target.dataset.lf && ev.target.tagName === "INPUT") { S.filters[ev.target.dataset.lf] = ev.target.value; S.page = 0; render(); }
     else if (ev.target.id === "order" && S.D) S.D.orderText = ev.target.value;
     else if (ev.target.dataset && ev.target.dataset.f && S.D) S.D[ev.target.dataset.f] = ev.target.value;
   });
+  document.addEventListener("toggle", (ev) => { const k = ev.target.dataset && ev.target.dataset.sec; if (k) S.open[k] = ev.target.open; }, true);
   window.addEventListener("hashchange", go);
 
   (async function start() {

@@ -2,13 +2,14 @@
 
 A small website for lab members to add and change phage data. The public, view-only catalogue stays on the Rudner Lab Observable page; this site writes to the same database.
 
-**First version: restriction digests.** For each phage a digest is recorded in three steps that can be done in any order and saved at any point:
+**First version: restriction digests.** The first page lists the phages; its columns can be sorted and filtered, and it shows 15, 25, 50 or 100 rows per page. A digest is recorded on one page:
 
-1. **Plan** – the virtual digest from the genome sequence: sites and fragments for every enzyme in the catalogue, and whether DNA-modification genes are annotated.
-2. **Lab** – the gel image, the lane order, and an optional control digest (lambda by default).
-3. **Compare** – lab gel beside the virtual digest in the same lane order, with one click per enzyme.
+- **Restriction enzymes** (a section that opens and closes): choose the enzymes and put the lanes in gel order. Sites and fragments come from the genome sequence, and annotated DNA-modification genes are flagged.
+- **Result for each enzyme**: the chosen lanes in order, each with four buttons: ✓ digests, ~ partial digestion, ✗ does not digest, ? undetermined.
+- **Lab digest** on the left (an uploaded image, or the one on PhagesDB) and the **virtual digest** on the right, drawn from the DNA sequence in the same lane order.
+- **Gel image, date and control** (a section that opens and closes): upload a gel, record the date and ladder, and add an optional control digest (lambda by default).
 
-Sequence first: 1 → 2 → 3. Gel first: 2, save, then 1 and 3 when the sequence arrives.
+A digest can be saved at any point: with only the enzymes chosen, with only the gel, or with some results still to enter.
 
 ## Files
 
