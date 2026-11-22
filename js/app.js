@@ -33,6 +33,10 @@
     const compared = lanes.length > 0 && lanes.every((id) => done.some((r) => r.restriction_enzyme_id === id)) && x.positive_control_passed != null;
     return { planned: lanes.length > 0, lab: !!(x.gel_image_path || x.gel_image_url), compared };
   }
+  // Images already recorded for the phage itself (for most phages these are the PhagesDB digest pictures).
+  const srcName = (u) => (/phagesdb\.org/i.test(u || "") ? "PhagesDB" : "the phage record");
+  const phageGel = () => (S.phage && S.phage.restriction_digest_image_url) || "";
+  const phageVirtual = () => (S.phage && S.phage.virtual_digest_image_url) || "";
   const chip = (text, kind) => `<span class="chip ${kind || ""}">${esc(text)}</span>`;
 
   // ---------- data ----------
@@ -131,7 +135,7 @@
       for (const r of rest) if (!D.lanes.some((L) => L.id === r.restriction_enzyme_id)) D.lanes.push(mk(r.restriction_enzyme_id));
     }
     S.D = D; S.msg = "";
-    S.step = !x ? "plan" : D.gelPath || D.legacyGelUrl ? "compare" : "lab";
+    S.step = !x ? "plan" : D.gelPath || D.legacyGelUrl || phageGel() ? "compare" : "lab";
   }
   function addLane(kind) {
     const L = S.D.lanes;
@@ -268,9 +272,10 @@
     return `<p><a href="#/">← All phages</a></p>
       <div class="card"><h2>${esc(p.phage_name)} <span class="sub">${esc(p.lab_phage_id || "")}</span></h2>
       <p class="sub">${esc([p.host_genus, p.host_species].filter(Boolean).join(" "))}${p.phagesdb_cluster ? " · Cluster " + esc(p.phagesdb_subcluster || p.phagesdb_cluster) : ""}${p.genome_length_bp ? " · " + fmt(p.genome_length_bp) + " bp" : " · no genome sequence yet"}</p>
+      ${phageGel() || phageVirtual() ? `<div class="two">${phageGel() ? `<div class="imgbox"><b>Digest image from ${srcName(phageGel())}</b><a href="${esc(phageGel())}" target="_blank" rel="noopener"><img src="${esc(phageGel())}" alt="Restriction digest"></a></div>` : ""}${phageVirtual() ? `<div class="imgbox"><b>Virtual digest image from ${srcName(phageVirtual())}</b><a href="${esc(phageVirtual())}" target="_blank" rel="noopener"><img src="${esc(phageVirtual())}" alt="Virtual digest"></a></div>` : ""}</div>` : ""}
       <div class="row"><h3 style="margin:0">Restriction digests</h3><a class="btn primary" href="#/phage/${p.phage_id}/digest/new">+ New digest</a></div>
       ${S.digests.length ? `<table class="list"><thead><tr><th>Date</th><th>Lanes</th><th>Plan</th><th>Lab gel</th><th>Compared</th><th>Blocked</th></tr></thead><tbody>${S.digests.map((x) => {
-        const st = stageOf(x, S.results), rs = S.results.filter((r) => r.restriction_digest_experiment_id === x.restriction_digest_experiment_id);
+        const st = stageOf(x, S.results); st.lab = st.lab || !!phageGel(); const rs = S.results.filter((r) => r.restriction_digest_experiment_id === x.restriction_digest_experiment_id);
         const lanes = (Array.isArray(x.lane_layout) ? x.lane_layout : []).map((t) => (t === "L" ? "ladder" : t === "U" ? "uncut" : enzyme(t).enzyme_name || "?"));
         const blk = rs.filter((r) => (r.virtual_digest_result || (r.predicted_site_count > 0 ? "Digestion" : "")) === "Digestion" && r.observed_result === "No digestion").map((r) => enzyme(r.restriction_enzyme_id).enzyme_name);
         const yes = chip("done", "ok"), no = chip("to do", "mute");
@@ -307,9 +312,10 @@
     return `<p class="sub">Genome: ${esc(g.label)} · ${fmt(g.seq.length)} bp · ${g.circular ? "circular" : "linear"}.${S.genes ? (S.genes.n ? (S.genes.hits.length ? ` <span class="chip warn">DNA-modification genes annotated: ${esc(S.genes.hits.join(", "))}</span>` : " No DNA-modification genes found in the annotation.") : " The genome is not annotated yet, so modification genes can't be checked.") : ""}</p>`;
   }
   function imageBox(kind, title, path, legacy) {
-    const url = publicUrl(path) || legacy || "";
+    const own = publicUrl(path), url = own || legacy || "";
+    const from = !own && url ? `<p class="tiny">Showing the image from ${srcName(url)}. Upload one only if this digest has its own gel.</p>` : "";
     return `<div class="imgbox"><div class="row"><b>${title}</b><label class="btn">${url ? "Replace image" : "Upload image"}<input type="file" accept="image/jpeg,image/png,image/webp" data-upload="${kind}" hidden></label></div>
-      ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${title}"></a>` : '<div class="empty">No image yet. JPEG or PNG; it is resized before upload.</div>'}</div>`;
+      ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${title}"></a>${from}` : '<div class="empty">No image yet. JPEG or PNG; it is resized before upload.</div>'}</div>`;
   }
 
   function stepPlan() {
@@ -327,7 +333,7 @@
       ${rows.map((r) => `<tr class="${r.on ? "sel" : ""}"><td><input type="checkbox" data-pick="${r.z.restriction_enzyme_id}"${r.on ? " checked" : ""}${r.lock ? ' disabled title="Already has a saved result"' : ""}></td><td><b>${esc(r.z.enzyme_name)}</b></td><td class="mono">${esc(r.z.recognition_sequence)}</td><td>${r.c ? r.c.sites : "—"}</td><td class="tiny">${r.c ? (r.c.sites ? r.c.fragments.slice(0, 8).map(fmt).join(", ") + (r.c.fragments.length > 8 ? " …" : "") : "uncut") : ""}</td><td class="tiny">${r.u ? esc(r.u.note) : ""}${r.z.modification_sensitivity ? `<div>${esc(r.z.modification_sensitivity)}</div>` : ""}${diag && r.z.diagnostic_group ? `<div class="t-warn">Diagnostic for DNA modification (${esc(r.z.diagnostic_group)})</div>` : ""}</td></tr>`).join("")}
       </tbody></table>
       <h4>Virtual digest of the chosen enzymes</h4>${g ? virtualGel() : '<p class="sub">Shown once a genome sequence is available.</p>'}
-      ${imageBox("virtual", "Virtual digest image (optional)", D.virtualPath, "")}`;
+      ${imageBox("virtual", "Virtual digest image (optional)", D.virtualPath, phageVirtual())}`;
   }
   function stepLab() {
     const D = S.D;
@@ -337,7 +343,7 @@
         <label>Ladder<select data-f="ladder"><option value="">— not recorded —</option>${CFG.LADDERS.concat(D.ladder && !CFG.LADDERS.includes(D.ladder) ? [D.ladder] : []).map((l) => `<option${l === D.ladder ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
       </div>
       <div class="two">
-        <div>${imageBox("gel", "Lab digest", D.gelPath, D.legacyGelUrl)}
+        <div>${imageBox("gel", "Lab digest", D.gelPath, D.legacyGelUrl || phageGel())}
           <label class="full">Link to the full-size original (SharePoint / OneDrive) <span class="sub">— lab members only</span><input type="url" data-f="gelOriginal" value="${esc(D.gelOriginal)}" placeholder="https://…"></label></div>
         <div><b>Lanes, in gel order</b>
           <div class="row"><input id="order" value="${esc(D.orderText)}" placeholder="Type them as printed on the gel: ladder, uncut, BamHI, SalI, …" style="flex:1 1 240px"><button data-act="order">Set lanes</button></div>
@@ -364,7 +370,7 @@
       <label class="btn">Use a different control sequence (FASTA file)<input type="file" accept=".fasta,.fa,.fna,.txt" data-controlfasta hidden></label>`;
   }
   function stepCompare() {
-    const D = S.D, gel = publicUrl(D.gelPath) || D.legacyGelUrl, stored = publicUrl(D.virtualPath) || (S.phage && S.phage.virtual_digest_image_url) || "";
+    const D = S.D, ownGel = publicUrl(D.gelPath) || D.legacyGelUrl, gel = ownGel || phageGel(), stored = publicUrl(D.virtualPath) || phageVirtual();
     const g = S.genome && S.genome.seq;
     const anyBlocked = D.lanes.some(isBlocked);
     const showStored = stored && (D.showStoredVirtual || !g);
@@ -372,7 +378,7 @@
       ${!gel ? '<div class="note warn">No lab gel image yet. Add it in step 2; you can still enter results from the gel in front of you.</div>' : ""}
       ${genomeBox()}
       <div class="two">
-        <div><b>Lab digest</b>${gel ? `<a href="${esc(gel)}" target="_blank" rel="noopener"><img class="big" src="${esc(gel)}" alt="Lab digest"></a>` : '<div class="empty">No image</div>'}
+        <div><b>Lab digest</b>${gel && !ownGel ? ` <span class="sub">from ${srcName(gel)}</span>` : ""}${gel ? `<a href="${esc(gel)}" target="_blank" rel="noopener"><img class="big" src="${esc(gel)}" alt="Lab digest"></a>` : '<div class="empty">No image</div>'}
           ${D.gelOriginal ? `<p class="tiny"><a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">Open the full-size original</a> (lab members only)</p>` : ""}</div>
         <div><div class="row"><b>Virtual digest</b>${stored && g ? `<button class="mini" data-act="togglevirtual">${showStored ? "Show predicted bands in lane order" : "Show the stored image"}</button>` : ""}</div>
           ${showStored ? `<img class="big" src="${esc(stored)}" alt="Virtual digest">` : g ? virtualGel() : '<div class="empty">No genome sequence yet, so no virtual digest. Results can still be recorded and compared later.</div>'}</div>
@@ -385,7 +391,7 @@
   function viewDigest() {
     const D = S.D, p = S.phage;
     const enz = D.lanes.filter((L) => !L.sp), unset = enz.filter((L) => !L.observed).length;
-    const done = { plan: enz.length > 0, lab: !!(D.gelPath || D.legacyGelUrl), compare: enz.length > 0 && !unset && D.control != null };
+    const done = { plan: enz.length > 0, lab: !!(D.gelPath || D.legacyGelUrl || phageGel()), compare: enz.length > 0 && !unset && D.control != null };
     const tab = (k, label) => `<button class="tab ${S.step === k ? "on" : ""}" data-step="${k}">${done[k] ? "✓ " : ""}${label}</button>`;
     return `<p><a href="#/phage/${p.phage_id}">← ${esc(p.phage_name)}</a></p>
       <div class="card"><h2>${D.isNew ? "New digest" : "Digest"} · ${esc(p.phage_name)} <span class="sub">${esc(D.date || "")}</span></h2>
