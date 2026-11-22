@@ -20,7 +20,8 @@
     control: null          // {seq, name}
   };
 
-  const GEL_OPT = { numbers: true, names: true, scale: true, height: 300, run: 1, gap: 0 };
+  const GEL_OPT = { numbers: true, names: true, scale: true, height: 300, run: 1, gap: 0, wells: 0 };
+  const gelOpt = () => Object.assign({}, GEL_OPT, { ladder: S.D ? S.D.ladder : "" });   // the ladder is the one recorded for this digest
   try { Object.assign(GEL_OPT, JSON.parse(localStorage.getItem("rudner.gelopt") || "{}")); } catch (err) { /* remembered settings are optional */ }
   const saveGelOpt = () => { try { localStorage.setItem("rudner.gelopt", JSON.stringify(GEL_OPT)); } catch (err) { /* not remembered */ } };
   const gelOptBar = () => `<span class="gelopt">Labels: ${[["numbers", "lane numbers"], ["names", "enzyme names"], ["scale", "ladder sizes"]].map((o) => `<label class="check"><input type="checkbox" data-gelopt="${o[0]}"${GEL_OPT[o[0]] ? " checked" : ""}>${o[1]}</label>`).join("")}</span>`;
@@ -320,7 +321,7 @@
     const D = S.D, k = K(kind || "digest");
     if (!k.seq) return "";
     if (!D.lanes.length) return '<p class="sub">The predicted bands appear here once a lane is added.</p>';
-    return `<div class="gelscroll">${DG.gelSvg(gelLanes(kind || "digest"), GEL_OPT)}</div>${D.lanes.some((L) => L.sp === "ladder") ? "" : '<p class="tiny">A 1 kb ladder is drawn first for scale; it is not one of your lanes.</p>'}`;
+    return `<div class="gelscroll" style="padding-top:${GEL_OPT.wells}px">${DG.gelSvg(gelLanes(kind || "digest"), gelOpt())}</div>${D.lanes.some((L) => L.sp === "ladder") ? "" : '<p class="tiny">A 1 kb ladder is drawn first for scale; it is not one of your lanes.</p>'}`;
   }
   function genomeBox() {
     const g = S.genome;
@@ -372,7 +373,9 @@
     const empty = k.ctl ? "No control digest image yet. Add one under <b>Control image and control DNA</b> below." : "No lab digest image yet. Add one under <b>Gel image and date</b> below.";
     const noSeq = k.ctl ? (S.control && S.control.error) || "Loading the control sequence…" : S.genome && S.genome.loading ? "Reading the genome…" : "No genome sequence yet, so no virtual digest. Results can still be recorded now and compared later.";
     return `<div class="row tools">
-        <span class="gelopt">Virtual digest: <label class="check">height <input type="range" min="180" max="800" step="10" value="${GEL_OPT.height}" data-gelnum="height"><output>${GEL_OPT.height}px</output></label>
+        <span class="gelopt"><label class="check">Ladder <select data-f="ladder" data-redraw><option value="">generic 1 kb</option>${CFG.LADDERS.concat(D.ladder && !CFG.LADDERS.includes(D.ladder) ? [D.ladder] : []).map((l) => `<option${l === D.ladder ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label></span>
+        <span class="gelopt">Virtual digest: <label class="check" title="Moves the virtual digest down so its wells sit level with the wells in the lab image">wells <input type="range" min="0" max="400" step="2" value="${GEL_OPT.wells}" data-gelnum="wells"><output>${GEL_OPT.wells}px</output></label>
+          <label class="check">height <input type="range" min="180" max="800" step="10" value="${GEL_OPT.height}" data-gelnum="height"><output>${GEL_OPT.height}px</output></label>
           <label class="check" title="A longer run moves the bands further down the gel; small fragments run off the end">run time <input type="range" min="40" max="250" step="5" value="${Math.round(GEL_OPT.run * 100)}" data-gelnum="run"><output>${Math.round(GEL_OPT.run * 100)}%</output></label></span>
         ${gelOptBar()}
         <label class="check"><input type="checkbox" data-guide${S.guide.on ? " checked" : ""}>guide line</label>
@@ -389,7 +392,6 @@
     const D = S.D;
     return `<div class="row fields">
         <label>Date of the digest<input type="date" data-f="date" value="${esc(D.date)}"></label>
-        <label>Ladder<select data-f="ladder"><option value="">— not recorded —</option>${CFG.LADDERS.concat(D.ladder && !CFG.LADDERS.includes(D.ladder) ? [D.ladder] : []).map((l) => `<option${l === D.ladder ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>
       </div>
       ${imageBox("gel", "Lab digest image", D.gelPath, D.legacyGelUrl || phageGel())}
       <label class="full">Link to the full-size original (SharePoint / OneDrive) <span class="sub">— lab members only</span><input type="url" data-f="gelOriginal" value="${esc(D.gelOriginal)}" placeholder="https://…"></label>`;
@@ -415,7 +417,7 @@
       <details class="sec" data-sec="enz"${openEnz ? " open" : ""}><summary><b>Enzymes and lane order:</b> ${D.lanes.length ? `${esc(D.lanes.map(laneName).join(", "))} <span class="sub">(change)</span>` : '<span class="sub">tick the lanes on the gel and put them in order</span>'}</summary>${enzymePicker()}</details>
       <div class="tabs">${tab("digest", "Digest", enz.length ? (unset ? `${enz.length - unset}/${enz.length}` : "✓") : "")}${tab("control", "Control", hasControl ? (cunset ? `${enz.length - cunset}/${enz.length}` : "✓") : "optional")}</div>
       ${ctl ? `<p class="sub">The control uses the same enzymes and lane order as the digest. It shows whether the enzymes and conditions worked, using a DNA known to cut (${esc(k.dnaName)}).</p>` : ""}
-      <h4>${ctl ? "Control result for each enzyme" : "Result for each enzyme"}</h4>
+      <h4>${ctl ? "Control result for each enzyme" : "Result for each enzyme"}${ctl && enz.length ? ' <button class="mini" data-act="ctlall" title="The expected result: every enzyme cuts the control DNA">Set all to ✓ digests</button> <button class="mini" data-act="ctlclear">Clear all</button>' : ""}</h4>
       ${laneStrip(S.tab)}
       ${!ctl && anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}
       ${gelPair(S.tab)}
@@ -449,7 +451,7 @@
   async function download(what) {
     const kind = S.tab, k = K(kind), stem = fileStem(kind);
     try {
-      const vsvg = () => DG.gelSvg(gelLanes(kind), GEL_OPT);
+      const vsvg = () => DG.gelSvg(gelLanes(kind), gelOpt());
       if (what === "virtual") { const c = await svgToCanvas(vsvg(), 2); c.toBlob((b) => saveBlob(b, `${stem}_virtual.png`), "image/png"); return; }
       let lab;
       try { lab = await fetchImage(k.img); } catch (err) {
@@ -529,6 +531,8 @@
     if (t.dataset.add) { addLane(t.dataset.add); render(); return; }
     if (t.dataset.control) { D.control = t.dataset.control === "true"; S.msg = ""; render(); return; }
     if (t.dataset.call !== undefined) { const L = D.lanes[Number(t.dataset.call)]; if (L && !L.sp) { K(S.tab).set(L, t.dataset.val); S.msg = ""; render(); } return; }
+    if (t.dataset.act === "ctlall") { for (const L of D.lanes) if (!L.sp) D.controlCalls[L.id] = "Digestion"; S.msg = ""; render(); return; }
+    if (t.dataset.act === "ctlclear") { D.controlCalls = {}; S.msg = ""; render(); return; }
     if (t.dataset.tab) { S.tab = t.dataset.tab; S.msg = ""; if (S.tab === "control" && !S.control) { render(); await loadControl(); } render(); return; }
     if (t.dataset.dl) { download(t.dataset.dl); return; }
     if (t.dataset.move !== undefined) { const i = Number(t.dataset.move), j = i + Number(t.dataset.dir); if (j >= 0 && j < D.lanes.length) { const x = D.lanes[i]; D.lanes[i] = D.lanes[j]; D.lanes[j] = x; render(); } return; }
@@ -544,7 +548,7 @@
     if (t.dataset.guide !== undefined) { S.guide.on = t.checked; render(); return; }
     if (t.dataset.gelnum) { saveGelOpt(); return; }
     if (t.dataset.sp) { if (t.checked) addLane(t.dataset.sp); else D.lanes = D.lanes.filter((L) => L.sp !== t.dataset.sp); render(); return; }
-    if (t.dataset.f) { D[t.dataset.f] = t.value; return; }
+    if (t.dataset.f) { D[t.dataset.f] = t.value; if (t.dataset.redraw !== undefined) render(); return; }
     if (t.dataset.upload && t.files[0]) { uploadImage(t.dataset.upload, t.files[0]); return; }
     if (t.dataset.controlfasta !== undefined && t.files[0]) {
       const f = DG.parseFasta(await t.files[0].text());
@@ -556,8 +560,8 @@
   document.addEventListener("input", (ev) => {
     const t = ev.target;
     if (!t.dataset || !t.dataset.gelnum || !S.D) return;
-    if (t.dataset.gelnum === "height") GEL_OPT.height = Number(t.value); else GEL_OPT.run = Number(t.value) / 100;
-    const o = t.parentElement.querySelector("output"); if (o) o.textContent = t.dataset.gelnum === "height" ? `${t.value}px` : `${t.value}%`;
+    if (t.dataset.gelnum === "run") GEL_OPT.run = Number(t.value) / 100; else GEL_OPT[t.dataset.gelnum] = Number(t.value);
+    const o = t.parentElement.querySelector("output"); if (o) o.textContent = t.dataset.gelnum === "run" ? `${t.value}%` : `${t.value}px`;
     const v = document.getElementById("vgel"); if (v && K(S.tab).seq) v.innerHTML = virtualGel(S.tab);
   });
   // The guide line is dragged directly; its position is kept when the page redraws.

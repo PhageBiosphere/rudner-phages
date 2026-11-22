@@ -2,6 +2,14 @@
 (function () {
   const IUPAC = { A: "A", C: "C", G: "G", T: "T", R: "[AG]", Y: "[CT]", S: "[GC]", W: "[AT]", K: "[GT]", M: "[AC]", B: "[CGT]", D: "[AGT]", H: "[ACT]", V: "[ACG]", N: "[ACGT]" };
   const LADDER_BP = [10000, 8000, 6000, 5000, 4000, 3000, 2000, 1500, 1000, 750, 500, 250];
+  // The ladders used in the lab, as [bp, ng per lane]; the same values as on the phage coverage reports. Heavier bands are drawn thicker.
+  const LADDERS = {
+    "1 kb ladder (EcoRV + NcoI)": [[10000, 60], [7750, 55], [5000, 65], [4000, 65], [3000, 60], [2000, 45], [1500, 35], [1000, 25], [750, 25], [250, 10]],
+    "100 bp ladder (PstI + NcoI)": [[10000, 45], [7750, 40], [4100, 130], [2000, 35], [1500, 32], [1000, 22], [900, 20], [800, 19], [700, 18], [600, 17], [500, 16], [400, 14], [300, 12], [200, 10], [100, 8]],
+    "1 kb ladder (NEB)": [[10000, 42], [8000, 42], [6000, 50], [5000, 42], [4000, 33], [3000, 125], [2000, 48], [1500, 36], [1000, 42], [500, 42]],
+    "100 bp ladder (NEB)": [[1517, 45], [1200, 35], [1000, 95], [900, 27], [800, 24], [700, 21], [600, 18], [517, 49], [500, 48], [400, 38], [300, 29], [200, 25], [100, 48]]
+  };
+  const ladderBands = (name) => LADDERS[name] || LADDER_BP.map((bp) => [bp, bp === 3000 || bp === 1000 ? 100 : 40]);
   const esc = (x) => String(x == null ? "" : x).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   function parseFasta(text) {
@@ -30,13 +38,14 @@
   }
 
   // lanes: [{label, kind: "ladder" | "bands", fragments: [bp]}]. Returns an SVG string, bands on a log scale.
-  // opts: height, run (run time, 1 = standard), gap (space between lanes; 0 makes them touch), numbers / names / scale (false hides those labels).
+  // opts: ladder (name of the ladder to draw), height, run (run time, 1 = standard), gap (space between lanes; 0 makes them touch), numbers / names / scale (false hides those labels).
   function gelSvg(lanes, opts) {
     opts = opts || {};
     const H = opts.height || 300, laneW = 46, gap = opts.gap == null ? 0 : opts.gap, padB = 10;
     const showNum = opts.numbers !== false, showName = opts.names !== false, showScale = opts.scale !== false;
     const top = 6 + (showNum ? 12 : 0) + (showName ? 12 : 0), left = showScale ? 40 : 4;
-    const all = lanes.flatMap((l) => (l.kind === "ladder" ? LADDER_BP : l.fragments || []));
+    const lad = ladderBands(opts.ladder), ladBp = lad.map((b) => b[0]), heavy = new Set(lad.filter((b) => b[1] >= 90).map((b) => b[0]));
+    const all = lanes.flatMap((l) => (l.kind === "ladder" ? ladBp : l.fragments || []));
     const maxBp = Math.max(10000, ...all), minBp = 100;
     // run: how long the gel ran. 1 puts the 100 bp band at the bottom; more moves everything further and small bands run off.
     const run = opts.run || 1;
@@ -46,7 +55,7 @@
     let s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${top + H + padB}" width="${W}" height="${top + H + padB}" role="img" aria-label="Virtual digest">`;
     if (showScale) {
       s += `<g font-family="system-ui,Arial,sans-serif" font-size="9" fill="#5f6368" text-anchor="end">`;
-      for (const bp of LADDER_BP.filter(onGel)) s += `<text x="${left - 5}" y="${(y(bp) + 3).toFixed(1)}">${bp >= 1000 ? bp / 1000 + " kb" : bp}</text>`;
+      for (const bp of ladBp.filter(onGel)) s += `<text x="${left - 5}" y="${(y(bp) + 3).toFixed(1)}">${bp >= 1000 ? bp / 1000 + " kb" : bp}</text>`;
       s += `</g>`;
     }
     s += `<rect x="${left}" y="${top}" width="${W - left - 4}" height="${H}" rx="4" fill="${gap ? "none" : "#111"}"/>`;
@@ -56,9 +65,9 @@
       if (showName) s += `<text x="${x + laneW / 2}" y="${top - 4}" font-family="system-ui,Arial,sans-serif" font-size="9.5" fill="#202124" text-anchor="middle">${esc(l.label)}</text>`;
       if (gap) s += `<rect data-lane="1" x="${x}" y="${top}" width="${laneW}" height="${H}" rx="4" fill="#111"/>`;
       else s += `<rect data-lane="1" x="${x}" y="${top}" width="${laneW}" height="${H}" fill="none"><title>${i + 1}. ${esc(l.label)}</title></rect>`;
-      const bands = (l.kind === "ladder" ? LADDER_BP : (l.fragments || []).slice(0, 80)).filter(onGel);
+      const bands = (l.kind === "ladder" ? ladBp : (l.fragments || []).slice(0, 80)).filter(onGel);
       for (const bp of bands) {
-        const thick = l.kind === "ladder" && (bp === 3000 || bp === 1000) ? 3 : 2;
+        const thick = l.kind === "ladder" && heavy.has(bp) ? 3.5 : 2;
         s += `<rect x="${x + 5}" y="${(y(bp) - thick / 2).toFixed(1)}" width="${laneW - 10}" height="${thick}" fill="${l.kind === "ladder" ? "#cfd8dc" : "#fff"}"><title>${esc(l.label)}: ${Number(bp).toLocaleString()} bp</title></rect>`;
       }
     });
@@ -77,5 +86,5 @@
     return { score: 1, note: "Very many small bands; hard to read" };
   }
 
-  window.Digest = { parseFasta, digest, gelSvg, MOD_TERMS, usefulness, LADDER_BP, esc };
+  window.Digest = { parseFasta, digest, gelSvg, MOD_TERMS, usefulness, LADDER_BP, LADDERS, esc };
 })();
