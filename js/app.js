@@ -1,4 +1,4 @@
-// Rudner Lab phage data entry. First version: restriction digests (plan, lab, compare).
+// Phage DNA Modification Analysis (Rudner Lab). First version: restriction digests (plan, lab, compare).
 (function () {
   "use strict";
   const CFG = window.RUDNER_CONFIG, DG = window.Digest, esc = DG.esc;

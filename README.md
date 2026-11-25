@@ -1,6 +1,9 @@
-# Rudner Lab phage data entry
+# Phage DNA Modification Analysis (Rudner Lab)
 
-A small website for lab members to add and change phage data. The public, view-only catalogue stays on the Rudner Lab Observable page; this site writes to the same database.
+A small website for lab members to record restriction enzyme digests of phage DNA and use them to detect DNA modifications. The public, view-only catalogue stays on the Rudner Lab Observable page; this site writes to the same database.
+
+- **Sequenced and annotated phages**: the lab digest is compared with a virtual digest drawn from the genome sequence, and annotated DNA-modification genes are flagged.
+- **Phages without a sequence**: only the restriction enzyme digest is recorded and analysed; the virtual digest and gene check appear once a sequence is available.
 
 **First version: restriction digests.** The first page lists the phages; its columns can be sorted and filtered, and it shows 15, 25, 50 or 100 rows per page. A digest is recorded on one page:
 

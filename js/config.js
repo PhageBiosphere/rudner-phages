@@ -1,4 +1,4 @@
-// Settings for the Rudner Lab phage data-entry site.
+// Settings for the Phage DNA Modification Analysis site (Rudner Lab).
 // Moving the database to another server means changing SUPABASE_URL and SUPABASE_KEY here, nothing else.
 window.RUDNER_CONFIG = {
   SUPABASE_URL: "https://hbsqfdcdvluygqhlmsub.supabase.co",
