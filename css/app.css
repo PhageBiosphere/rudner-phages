@@ -116,3 +116,15 @@ td.acts{white-space:nowrap;text-align:right}
 .imgbox .row.res{justify-content:flex-start}
 table.an th.c,table.an td.c{padding-left:5px;padding-right:5px}
 table.fig td.c{font-size:12px}table.fig tr:hover{background:none}
+hr.sep{border:0;border-top:2px solid var(--line);margin:18px 0 14px}
+th[data-asort]{cursor:pointer;user-select:none;white-space:nowrap}th[data-asort]:hover{background:#eef2f7}
+table.an .g0{border-left:2px solid var(--line)}table.an th.grp{font-size:11.5px;color:var(--sub);font-weight:600;text-align:center}
+.tablescroll.tall{max-height:78vh;overflow:auto}
+table.an.main thead th{position:sticky;top:0;z-index:2;background:#fafbfc}table.an.main thead tr.r1 th{height:24px;box-sizing:border-box}table.an.main thead tr.r2 th{top:24px}
+table.an.main th.sel,table.an.main td.sel{position:sticky;left:0;width:26px;min-width:26px;padding:4px 4px 4px 8px;background:#fff;z-index:1}
+table.an.main th.nm,table.an.main td.nm{position:sticky;left:30px;background:#fff;z-index:1;white-space:nowrap;box-shadow:1px 0 0 var(--line)}
+table.an.main thead th.sel,table.an.main thead th.nm{z-index:3;background:#fafbfc}
+table.an.main td.sel input,table.an.main th.sel input{display:inline;margin:0}
+table.fig tr.filters select{min-width:54px;padding:2px 2px;font-size:11.5px}table.fig tr.filters input{min-width:44px}
+table.fig td.warn{color:var(--warn)}table.fig tr[data-go]:hover{background:#f5f8ff}
+.savebar label.check{margin-right:14px}
