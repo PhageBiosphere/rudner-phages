@@ -38,7 +38,7 @@
   function stageOf(x, results) {
     const lanes = Array.isArray(x.lane_layout) ? x.lane_layout.filter((t) => t !== "L" && t !== "U") : [];
     const done = (results || []).filter((r) => r.restriction_digest_experiment_id === x.restriction_digest_experiment_id);
-    const compared = lanes.length > 0 && lanes.every((id) => done.some((r) => r.restriction_enzyme_id === id)) && x.positive_control_passed != null;
+    const compared = lanes.length > 0 && lanes.every((id) => done.some((r) => r.restriction_enzyme_id === id)) && (x.positive_control_passed != null || x.no_control === true);
     return { planned: lanes.length > 0, lab: !!(x.gel_image_path || x.gel_image_url), compared };
   }
   // Images already recorded for the phage itself (for most phages these are the PhagesDB digest pictures).
@@ -62,7 +62,7 @@
     const [cat, enz, idx] = await Promise.all([
       sb.from("phage_catalog_public").select("phage_id,lab_phage_id,phage_name,host_genus,host_species,host_strain,phagesdb_cluster,phagesdb_subcluster,genome_length_bp,annotation_status,restriction_digest_image_url,virtual_digest_image_url").order("phage_name").range(0, 4999),
       sb.from("restriction_enzymes").select("*").eq("active", true).order("enzyme_name"),
-      sb.from("restriction_digest_experiments").select("restriction_digest_experiment_id,phage_id,experiment_date,gel_image_path,gel_image_url,positive_control_passed,lane_layout").range(0, 9999)
+      sb.from("restriction_digest_experiments").select("restriction_digest_experiment_id,phage_id,experiment_date,gel_image_path,gel_image_url,positive_control_passed,no_control,lane_layout").range(0, 9999)
     ]);
     if (cat.error) throw cat.error;
     if (enz.error) throw enz.error;
@@ -134,7 +134,7 @@
     const D = {
       id: x ? x.restriction_digest_experiment_id : uuid(), isNew: !x,
       date: (x && x.experiment_date) || "", ladder: (x && x.ladder) || "",
-      control: x ? x.positive_control_passed : null, controlName: (x && x.control_name) || "Lambda DNA",
+      control: x ? (x.no_control ? "none" : x.positive_control_passed) : null,   // true, false, "none" (no control was run) or null (not answered) controlName: (x && x.control_name) || "Lambda DNA",
       gelPath: (x && x.gel_image_path) || "", controlPath: (x && x.control_image_path) || "", virtualPath: (x && x.virtual_image_path) || "",
       gelOriginal: (x && x.gel_original_url) || "", controlOriginal: (x && x.control_original_url) || "",
       legacyGelUrl: (x && x.gel_image_url) || "", lanes: [], saved: new Map(), controlCalls: Object.assign({}, (x && x.control_results) || {}), orderText: "", orderMsg: "", showStoredVirtual: false
@@ -238,7 +238,7 @@
     S.busy = "Saving…"; render();
     try {
       const row = {
-        experiment_date: D.date || null, ladder: D.ladder || null, positive_control_passed: D.control, control_name: D.controlName || null,
+        experiment_date: D.date || null, ladder: D.ladder || null, positive_control_passed: D.control === "none" ? null : D.control, no_control: D.control === "none", control_name: D.controlName || null,
         gel_image_path: D.gelPath || null, control_image_path: D.controlPath || null, virtual_image_path: D.virtualPath || null,
         gel_original_url: D.gelOriginal.trim() || null, control_original_url: D.controlOriginal.trim() || null,
         lane_layout: D.lanes.map((L) => (L.sp === "ladder" ? "L" : L.sp === "uncut" ? "U" : L.id)),
@@ -332,7 +332,7 @@
   }
   async function loadAnalysis() {
     const [ex, rs] = await Promise.all([
-      fetchAll("restriction_digest_experiments", "restriction_digest_experiment_id,phage_id,experiment_date,positive_control_passed", "restriction_digest_experiment_id"),
+      fetchAll("restriction_digest_experiments", "restriction_digest_experiment_id,phage_id,experiment_date,positive_control_passed,no_control", "restriction_digest_experiment_id"),
       fetchAll("restriction_digest_results", "restriction_digest_result_id,restriction_digest_experiment_id,restriction_enzyme_id,observed_result,virtual_digest_result,predicted_site_count", "restriction_digest_result_id")
     ]);
     const exp = new Map(ex.map((x) => [x.restriction_digest_experiment_id, x]));
@@ -341,7 +341,7 @@
       const x = exp.get(r.restriction_digest_experiment_id);
       if (!x || !r.observed_result) continue;
       const virt = r.virtual_digest_result || (r.predicted_site_count > 0 ? "Digestion" : "");
-      const cell = { obs: r.observed_result, virt, date: x.experiment_date || "", ctl: x.positive_control_passed === true, blocked: virt === "Digestion" && r.observed_result === "No digestion", n: 1, mixed: false };
+      const cell = { obs: r.observed_result, virt, date: x.experiment_date || "", ctl: x.positive_control_passed === true, noctl: x.no_control === true, blocked: virt === "Digestion" && r.observed_result === "No digestion", n: 1, mixed: false };
       if (!by.has(x.phage_id)) by.set(x.phage_id, new Map());
       const m = by.get(x.phage_id), old = m.get(r.restriction_enzyme_id);
       if (old) { const keep = cell.date > old.date ? cell : old, mixed = old.mixed || old.obs !== cell.obs, n = old.n + 1; keep.mixed = mixed; keep.n = n; m.set(r.restriction_enzyme_id, keep); }
@@ -351,7 +351,7 @@
   }
   function analysisCell(c) {
     if (!c) return '<td class="c"></td>';
-    const tip = `${c.obs} · virtual digest: ${c.virt || "no genome sequence"} · ${c.date || "no date"}${c.blocked && !c.ctl ? " · control digest not confirmed" : ""}${c.n > 1 ? ` · latest of ${c.n} digests${c.mixed ? ", and their results differ" : ""}` : ""}`;
+    const tip = `${c.obs} · virtual digest: ${c.virt || "no genome sequence"} · ${c.date || "no date"}${c.blocked && !c.ctl ? (c.noctl ? " · no control digest was run" : " · control digest not confirmed") : ""}${c.n > 1 ? ` · latest of ${c.n} digests${c.mixed ? ", and their results differ" : ""}` : ""}`;
     const mark = c.mixed ? '<sup title="Digests of this phage disagree for this enzyme">≠</sup>' : "";
     if (c.blocked) return `<td class="c ${c.ctl ? "blk" : "blkq"}" title="${esc(tip)}"><b>✗ blocked${c.ctl ? "" : "*"}</b>${mark}</td>`;
     const k = c.obs === "Digestion" ? ["✓", "ok"] : c.obs === "Partial digestion" ? ["~", "warn"] : c.obs === "No digestion" ? ["✗", c.virt ? "mute" : "bad"] : ["?", "mute"];
@@ -375,7 +375,7 @@
       <div class="tablescroll"><table class="list an"><thead><tr><th>Phage</th><th>Rud Lab ID</th><th>Genus</th><th>Cluster</th><th>Genome</th>${used.map((z) => `<th class="c" title="${esc(z.recognition_sequence || "")}">${esc(z.enzyme_name)}</th>`).join("")}<th>Blocked enzymes</th></tr></thead><tbody>
       ${rows.map((r) => `<tr data-go="#/phage/${r.p.phage_id}"><td><b>${esc(r.p.phage_name || "")}</b></td><td>${esc(labId(r.p))}</td><td>${esc(r.p.host_genus || "")}</td><td>${esc(r.p.phagesdb_subcluster || r.p.phagesdb_cluster || "")}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td>${used.map((z) => analysisCell(r.m.get(z.restriction_enzyme_id))).join("")}<td>${r.blk.map((z) => chip(z.enzyme_name, r.sure.includes(z) ? "bad" : "warn")).join(" ")}</td></tr>`).join("") || `<tr><td colspan="${used.length + 6}" class="sub">No phage matches these filters.</td></tr>`}
       </tbody></table></div>
-      <p class="tiny">✓ digests · ~ partial digestion · ✗ does not digest · ? undetermined. <b>Blocked</b>: the genome sequence has sites for the enzyme but the lab gel shows no cut, which points to DNA modification. * the control digest for that gel has not been confirmed, so the result is provisional. A grey ✗ means the genome has no sites, so no cut is expected; a red ✗ means there is no genome sequence to compare with. Each cell shows the phage's most recent digest with that enzyme. Click a row to open the phage.</p></div>`;
+      <p class="tiny">✓ digests · ~ partial digestion · ✗ does not digest · ? undetermined. <b>Blocked</b>: the genome sequence has sites for the enzyme but the lab gel shows no cut, which points to DNA modification. * the control digest for that gel has not been confirmed, or no control was run, so the result is provisional. A grey ✗ means the genome has no sites, so no cut is expected; a red ✗ means there is no genome sequence to compare with. Each cell shows the phage's most recent digest with that enzyme. Click a row to open the phage.</p></div>`;
   }
   function viewPhage() {
     const p = S.phage;
@@ -389,7 +389,7 @@
         const lanes = (Array.isArray(x.lane_layout) ? x.lane_layout : []).map((t) => (t === "L" ? "ladder" : t === "U" ? "uncut" : enzyme(t).enzyme_name || "?"));
         const blk = rs.filter((r) => (r.virtual_digest_result || (r.predicted_site_count > 0 ? "Digestion" : "")) === "Digestion" && r.observed_result === "No digestion").map((r) => enzyme(r.restriction_enzyme_id).enzyme_name);
         const yes = chip("done", "ok"), no = chip("to do", "mute");
-        return `<tr data-go="#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}"><td>${esc(x.experiment_date || "no date")}</td><td>${esc(lanes.join(" · ") || rs.map((r) => enzyme(r.restriction_enzyme_id).enzyme_name).join(" · "))}</td><td>${st.planned ? yes : no}</td><td>${st.lab ? yes : no}</td><td>${st.compared ? yes : no}</td><td>${blk.length ? chip(blk.join(", "), x.positive_control_passed === true ? "bad" : "warn") + (x.positive_control_passed === true ? "" : ' <span class="sub">control not passed</span>') : ""}</td></tr>`;
+        return `<tr data-go="#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}"><td>${esc(x.experiment_date || "no date")}</td><td>${esc(lanes.join(" · ") || rs.map((r) => enzyme(r.restriction_enzyme_id).enzyme_name).join(" · "))}</td><td>${st.planned ? yes : no}</td><td>${st.lab ? yes : no}</td><td>${st.compared ? yes : no}</td><td>${blk.length ? chip(blk.join(", "), x.positive_control_passed === true ? "bad" : "warn") + (x.positive_control_passed === true ? "" : ` <span class="sub">${x.no_control ? "no control" : "control not passed"}</span>`) : ""}</td></tr>`;
       }).join("")}</tbody></table>` : '<p class="sub">No digests recorded for this phage yet.</p>'}
       </div>`;
   }
@@ -524,11 +524,11 @@
       ${ctl ? `<p class="sub">The control uses the same enzymes and lane order as the digest. It shows whether the enzymes and conditions worked, using a DNA known to cut (${esc(k.dnaName)}).</p>` : ""}
       ${gelPair(S.tab, `<h4>${ctl ? "Control result for each enzyme" : "Result for each enzyme"}${ctl && enz.length ? ' <button class="mini" data-act="ctlall" title="The expected result: every enzyme cuts the control DNA">Set all to ✓ digests</button> <button class="mini" data-act="ctlclear">Clear all</button>' : ""}</h4>
       ${laneStrip(S.tab)}
-      ${!ctl && anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}`)}
+      ${!ctl && anyBlocked && D.control !== true ? `<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). ${D.control === "none" ? "No control was run, so the blocked result stays provisional: there is no proof the enzyme was working." : "Blocked results are only counted when the control digested as expected: answer that beside Save."}</div>` : ""}`)}
       ${ctl
         ? `<details class="sec" data-sec="ctl"${openCtl ? " open" : ""}><summary><b>Control image and control DNA</b> <span class="sub">${[D.controlPath ? "control image added" : "no control image", esc(k.dnaName)].join(" · ")}</span></summary>${controlDetails()}</details>`
         : `<details class="sec" data-sec="gel"${openGel ? " open" : ""}><summary><b>Gel image and date</b> <span class="sub">${[D.date || "no date", k.ownImg ? "own gel image" : k.img ? `gel from ${srcName(k.img)}` : "no gel image"].join(" · ")}</span></summary>${gelDetails()}</details>`}
-      <div class="savebar"><span>Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></span>
+      <div class="savebar"><span>Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"], ["none", "No control"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></span>
         <button class="primary" data-act="save"${S.busy ? " disabled" : ""}>Save</button>
         <span class="msg">${esc(S.busy || S.msg || (enz.length ? `${D.lanes.length} lane${D.lanes.length === 1 ? "" : "s"} · ${enz.length} enzyme${enz.length === 1 ? "" : "s"}${unset ? ` · ${unset} without a result` : ""}` : ""))}</span></div>
       </div>`;
@@ -638,7 +638,7 @@
     if (t.dataset.act === "presetsave") { const f = app.querySelector("[data-presetname]"); savePreset(f ? f.value : D.presetName); return; }
     if (t.dataset.presetdel !== undefined) { if (t.dataset.yes) await deletePreset(t.dataset.presetdel); else S.presetDel = t.dataset.presetdel || null; render(); return; }
     if (t.dataset.add) { addLane(t.dataset.add); render(); return; }
-    if (t.dataset.control) { D.control = t.dataset.control === "true"; S.msg = ""; render(); return; }
+    if (t.dataset.control) { D.control = t.dataset.control === "none" ? "none" : t.dataset.control === "true"; S.msg = ""; render(); return; }
     if (t.dataset.call !== undefined) { const L = D.lanes[Number(t.dataset.call)]; if (L && !L.sp) { K(S.tab).set(L, t.dataset.val); S.msg = ""; render(); } return; }
     if (t.dataset.act === "ctlall") { for (const L of D.lanes) if (!L.sp) D.controlCalls[L.id] = "Digestion"; S.msg = ""; render(); return; }
     if (t.dataset.act === "ctlclear") { D.controlCalls = {}; S.msg = ""; render(); return; }
