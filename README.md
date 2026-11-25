@@ -7,10 +7,12 @@ A small website for lab members to record restriction enzyme digests of phage DN
 
 **First version: restriction digests.** The first page lists the phages; its columns can be sorted and filtered, and it shows 15, 25, 50 or 100 rows per page. A digest is recorded on one page:
 
-- **Restriction enzymes** (a section that opens and closes): choose the enzymes and put the lanes in gel order. Sites and fragments come from the genome sequence, and annotated DNA-modification genes are flagged.
+- **Restriction enzymes** (a section that opens and closes): choose the enzymes and put the lanes in gel order, or click a saved **preset** (for example High GC or Low GC) to fill them in at once. Any lab member can save the current lanes as a preset; only an owner can delete one. Sites and fragments come from the genome sequence, and annotated DNA-modification genes are flagged.
 - **Result for each enzyme**: the chosen lanes in order, each with four buttons: ✓ digests, ~ partial digestion, ✗ does not digest, ? undetermined.
 - **Lab digest** on the left (an uploaded image, or the one on PhagesDB) and the **virtual digest** on the right, drawn from the DNA sequence in the same lane order.
 - **Gel image, date and control** (a section that opens and closes): upload a gel, record the date and ladder, and add an optional control digest (lambda by default).
+
+The **Analysis** page lists every phage that has results, with one column per enzyme. It can be filtered to the phages with a **blocked** enzyme (the genome has sites but the gel shows no cut), to one enzyme, or by phage name or cluster.
 
 A digest can be saved at any point: with only the enzymes chosen, with only the gel, or with some results still to enter.
 

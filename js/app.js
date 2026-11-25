@@ -11,13 +11,15 @@
 
   const S = {
     user: null, role: null, name: "",
+    presets: [], presetDel: null,   // named lane lists shared by the lab; presetDel = the one an owner is about to delete
     catalog: [], enzymes: [], digestIndex: new Map(),   // phage_id -> [{experiment summary}]
     phage: null, digests: [], results: [],
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
     D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: false, y: 160 },
     sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", digest: "" }, pageSize: 25, page: 0,
-    control: null          // {seq, name}
+    control: null,         // {seq, name}
+    an: { loaded: false, by: new Map(), show: "all", enz: "", q: "" }   // the analysis page
   };
 
   const GEL_OPT = { numbers: true, names: true, scale: true, height: 300, run: 1, gap: 0, wells: 0 };
@@ -67,6 +69,12 @@
     S.catalog = cat.data || []; S.enzymes = enz.data || [];
     S.digestIndex = new Map();
     for (const x of idx.data || []) { if (!S.digestIndex.has(x.phage_id)) S.digestIndex.set(x.phage_id, []); S.digestIndex.get(x.phage_id).push(x); }
+    await loadPresets();
+  }
+  // Presets are a convenience: if they can't be read the rest of the site still works.
+  async function loadPresets() {
+    const r = await sb.from("restriction_enzyme_presets").select("restriction_enzyme_preset_id,preset_name,lane_layout").order("preset_name");
+    S.presets = r.error ? [] : r.data || [];
   }
   async function loadPhage(id) {
     S.phage = S.catalog.find((p) => p.phage_id === id) || null;
@@ -154,6 +162,40 @@
     const D = S.D, i = D.lanes.findIndex((L) => L.id === id);
     if (on && i < 0) D.lanes.push({ id, observed: "" });
     if (!on && i >= 0) { if (D.saved.has(id) && S.role !== "owner") { S.msg = "A saved result can't be removed here; only an owner can remove one."; return; } D.lanes.splice(i, 1); }
+  }
+  // ---------- enzyme presets: named lane lists (for example High GC, Low GC) shared by the lab ----------
+  const layoutOf = (lanes) => lanes.map((L) => (L.sp === "ladder" ? "L" : L.sp === "uncut" ? "U" : L.id));
+  const presetLabel = (P) => (Array.isArray(P.lane_layout) ? P.lane_layout : []).map((t) => (t === "L" ? "Ladder" : t === "U" ? "Uncut" : enzyme(t).enzyme_name || "(enzyme no longer listed)")).join(", ");
+  function applyPreset(id) {
+    const D = S.D, P = S.presets.find((x) => x.restriction_enzyme_preset_id === id);
+    if (!P) return;
+    const old = D.lanes, next = [];
+    for (const t of Array.isArray(P.lane_layout) ? P.lane_layout : []) {
+      if (t === "L") next.push({ sp: "ladder" }); else if (t === "U") next.push({ sp: "uncut" });
+      else if (S.enzymes.some((z) => z.restriction_enzyme_id === t) && !next.some((L) => L.id === t)) next.push(old.find((L) => L.id === t) || { id: t, observed: "" });
+    }
+    // A preset never drops an enzyme that already has a result (saved or just entered): it is kept at the end.
+    const kept = old.filter((L) => !L.sp && !next.some((n) => n.id === L.id) && (L.observed || D.saved.has(L.id) || D.controlCalls[L.id]));
+    D.lanes = next.concat(kept);
+    S.msg = `Preset "${P.preset_name}" applied.${kept.length ? ` ${kept.map(laneName).join(", ")} kept at the end because ${kept.length === 1 ? "it has" : "they have"} a result.` : ""} Save to keep it with this digest.`;
+  }
+  async function savePreset(name) {
+    const D = S.D; name = String(name || "").trim().slice(0, 60);
+    if (!name) { S.msg = "Type a name for the preset first, for example High GC."; render(); return; }
+    if (!D.lanes.some((L) => !L.sp)) { S.msg = "Choose at least one enzyme before saving a preset."; render(); return; }
+    const same = S.presets.find((x) => x.preset_name.trim().toLowerCase() === name.toLowerCase());
+    S.busy = "Saving the preset…"; render();
+    const r = same
+      ? await sb.from("restriction_enzyme_presets").update({ lane_layout: layoutOf(D.lanes) }).eq("restriction_enzyme_preset_id", same.restriction_enzyme_preset_id)
+      : await sb.from("restriction_enzyme_presets").insert({ preset_name: name, lane_layout: layoutOf(D.lanes) });
+    if (r.error) S.msg = `Preset not saved: ${r.error.message || r.error}`;
+    else { await loadPresets(); D.presetName = ""; S.msg = same ? `Preset "${same.preset_name}" now holds these lanes.` : `Preset "${name}" saved. It can be chosen on every phage's digest page.`; }
+    S.busy = ""; render();
+  }
+  async function deletePreset(id) {
+    const r = await sb.from("restriction_enzyme_presets").delete().eq("restriction_enzyme_preset_id", id);
+    S.presetDel = null;
+    if (r.error) S.msg = `Preset not deleted: ${r.error.message || r.error}`; else { await loadPresets(); S.msg = "Preset deleted. Digests that used it are unchanged."; }
   }
   // ---------- images ----------
   function resizeImage(file) {
@@ -277,6 +319,64 @@
       ${S.enzymes.map((z) => `<tr><td><b>${esc(z.enzyme_name)}</b></td><td class="mono">${esc(z.recognition_sequence)}</td><td class="mono">${esc(cutSite(z))}</td><td>${esc(z.modification_sensitivity || "")}</td><td>${esc(z.diagnostic_group || "")}</td><td class="tiny">${esc(z.notes || "")}</td></tr>`).join("")}
       </tbody></table></div>`;
   }
+  // ---------- analysis: every phage with recorded results, one column per enzyme ----------
+  // The server returns at most 1,000 rows at a time, so a whole table is read page by page.
+  async function fetchAll(table, cols, key) {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const r = await sb.from(table).select(cols).order(key).range(from, from + 999);
+      if (r.error) throw r.error;
+      out.push(...(r.data || []));
+      if (!r.data || r.data.length < 1000) return out;
+    }
+  }
+  async function loadAnalysis() {
+    const [ex, rs] = await Promise.all([
+      fetchAll("restriction_digest_experiments", "restriction_digest_experiment_id,phage_id,experiment_date,positive_control_passed", "restriction_digest_experiment_id"),
+      fetchAll("restriction_digest_results", "restriction_digest_result_id,restriction_digest_experiment_id,restriction_enzyme_id,observed_result,virtual_digest_result,predicted_site_count", "restriction_digest_result_id")
+    ]);
+    const exp = new Map(ex.map((x) => [x.restriction_digest_experiment_id, x]));
+    const by = new Map();   // phage_id -> Map(enzyme_id -> the latest result for that enzyme)
+    for (const r of rs) {
+      const x = exp.get(r.restriction_digest_experiment_id);
+      if (!x || !r.observed_result) continue;
+      const virt = r.virtual_digest_result || (r.predicted_site_count > 0 ? "Digestion" : "");
+      const cell = { obs: r.observed_result, virt, date: x.experiment_date || "", ctl: x.positive_control_passed === true, blocked: virt === "Digestion" && r.observed_result === "No digestion", n: 1, mixed: false };
+      if (!by.has(x.phage_id)) by.set(x.phage_id, new Map());
+      const m = by.get(x.phage_id), old = m.get(r.restriction_enzyme_id);
+      if (old) { const keep = cell.date > old.date ? cell : old, mixed = old.mixed || old.obs !== cell.obs, n = old.n + 1; keep.mixed = mixed; keep.n = n; m.set(r.restriction_enzyme_id, keep); }
+      else m.set(r.restriction_enzyme_id, cell);
+    }
+    S.an.by = by; S.an.loaded = true;
+  }
+  function analysisCell(c) {
+    if (!c) return '<td class="c"></td>';
+    const tip = `${c.obs} · virtual digest: ${c.virt || "no genome sequence"} · ${c.date || "no date"}${c.blocked && !c.ctl ? " · control digest not confirmed" : ""}${c.n > 1 ? ` · latest of ${c.n} digests${c.mixed ? ", and their results differ" : ""}` : ""}`;
+    const mark = c.mixed ? '<sup title="Digests of this phage disagree for this enzyme">≠</sup>' : "";
+    if (c.blocked) return `<td class="c ${c.ctl ? "blk" : "blkq"}" title="${esc(tip)}"><b>✗ blocked${c.ctl ? "" : "*"}</b>${mark}</td>`;
+    const k = c.obs === "Digestion" ? ["✓", "ok"] : c.obs === "Partial digestion" ? ["~", "warn"] : c.obs === "No digestion" ? ["✗", c.virt ? "mute" : "bad"] : ["?", "mute"];
+    return `<td class="c ${k[1]}" title="${esc(tip)}">${k[0]}${mark}</td>`;
+  }
+  function viewAnalysis() {
+    const A = S.an;
+    if (!A.loaded) return '<div class="card"><h2>Analysis</h2><p class="sub">Reading the results…</p></div>';
+    const used = S.enzymes.filter((z) => [...A.by.values()].some((m) => m.has(z.restriction_enzyme_id)));
+    const all = S.catalog.filter((p) => A.by.has(p.phage_id)).map((p) => { const m = A.by.get(p.phage_id), blk = used.filter((z) => (m.get(z.restriction_enzyme_id) || {}).blocked); return { p, m, blk, sure: blk.filter((z) => m.get(z.restriction_enzyme_id).ctl) }; });
+    const q = A.q.trim().toLowerCase(), one = (list) => (A.enz ? list.some((z) => z.restriction_enzyme_id === A.enz) : list.length > 0);
+    const rows = all.filter((r) => (!q || String(r.p.phage_name || "").toLowerCase().includes(q) || String(r.p.phagesdb_cluster || "").toLowerCase() === q)
+      && (A.show === "blocked" ? one(r.blk) : A.show === "confirmed" ? one(r.sure) : !A.enz || r.m.has(A.enz)));
+    const opt = (v, label, cur) => `<option value="${v}"${cur === v ? " selected" : ""}>${esc(label)}</option>`;
+    const bar = `<div class="row anbar"><label class="check">Show <select data-an="show">${opt("all", "all phages with results", A.show)}${opt("blocked", "phages with a blocked enzyme", A.show)}${opt("confirmed", "blocked, control digest confirmed", A.show)}</select></label>
+      <label class="check">Enzyme <select data-an="enz">${opt("", "any", A.enz)}${used.map((z) => opt(z.restriction_enzyme_id, z.enzyme_name, A.enz)).join("")}</select></label>
+      <label class="check">Phage or cluster <input data-an="q" value="${esc(A.q)}" placeholder="filter"></label>
+      <span class="sub">${fmt(rows.length)} of ${fmt(all.length)} phages with results · ${fmt(all.filter((r) => r.blk.length).length)} with a blocked enzyme</span></div>`;
+    if (!all.length) return `<div class="card"><h2>Analysis</h2><p class="sub">No digest results have been recorded yet. Open a phage, add a digest and set a result for each enzyme; the phages then appear here.</p></div>`;
+    return `<div class="card"><h2>Analysis <span class="sub">restriction enzyme results for every phage</span></h2>${bar}
+      <div class="tablescroll"><table class="list an"><thead><tr><th>Phage</th><th>Rud Lab ID</th><th>Genus</th><th>Cluster</th><th>Genome</th>${used.map((z) => `<th class="c" title="${esc(z.recognition_sequence || "")}">${esc(z.enzyme_name)}</th>`).join("")}<th>Blocked enzymes</th></tr></thead><tbody>
+      ${rows.map((r) => `<tr data-go="#/phage/${r.p.phage_id}"><td><b>${esc(r.p.phage_name || "")}</b></td><td>${esc(labId(r.p))}</td><td>${esc(r.p.host_genus || "")}</td><td>${esc(r.p.phagesdb_subcluster || r.p.phagesdb_cluster || "")}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td>${used.map((z) => analysisCell(r.m.get(z.restriction_enzyme_id))).join("")}<td>${r.blk.map((z) => chip(z.enzyme_name, r.sure.includes(z) ? "bad" : "warn")).join(" ")}</td></tr>`).join("") || `<tr><td colspan="${used.length + 6}" class="sub">No phage matches these filters.</td></tr>`}
+      </tbody></table></div>
+      <p class="tiny">✓ digests · ~ partial digestion · ✗ does not digest · ? undetermined. <b>Blocked</b>: the genome sequence has sites for the enzyme but the lab gel shows no cut, which points to DNA modification. * the control digest for that gel has not been confirmed, so the result is provisional. A grey ✗ means the genome has no sites, so no cut is expected; a red ✗ means there is no genome sequence to compare with. Each cell shows the phage's most recent digest with that enzyme. Click a row to open the phage.</p></div>`;
+  }
   function viewPhage() {
     const p = S.phage;
     return `<p><a href="#/">← All phages</a></p>
@@ -350,7 +450,10 @@
       return box(`data-pick="${z.restriction_enzyme_id}"`, on, `<b>${esc(z.enzyme_name)}</b> <span class="mono">${esc(cutSite(z))}</span>${c ? ` <span class="n">(${c.sites})</span>` : ""}`, tip, lock);
     }).join("");
     const order = D.lanes.length ? `<div class="order"><span class="sub">Lane order:</span>${D.lanes.map((L, i) => `<span class="ord${L.sp ? " sp" : ""}"><button class="mini" data-move="${i}" data-dir="-1"${i ? "" : " disabled"} title="Move one lane to the left on the gel">◀</button><b>${esc(laneName(L))}</b><button class="mini" data-move="${i}" data-dir="1"${i < last ? "" : " disabled"} title="Move one lane to the right on the gel">▶</button></span>`).join("")}<button class="mini" data-add="ladder" title="Add another ladder lane at the end">+ ladder</button></div>` : "";
-    return `${order}<div class="picks">${box('data-sp="ladder"', D.lanes.some((L) => L.sp === "ladder"), "<b>Ladder</b>", "A ladder lane; it goes in lane 1")}${box('data-sp="uncut"', D.lanes.some((L) => L.sp === "uncut"), "<b>Uncut</b>", "A lane of uncut DNA")}${enz}</div>
+    const owner = S.role === "owner";
+    const presets = `<div class="presets"><span class="sub">Presets:</span>${S.presets.length ? S.presets.map((P) => { const id = P.restriction_enzyme_preset_id; return `<span class="ord"><button class="mini" data-preset="${id}" title="Use these lanes: ${esc(presetLabel(P))}">${esc(P.preset_name)}</button>${owner ? (S.presetDel === id ? `<span class="sub">Delete?</span><button class="mini" data-presetdel="${id}" data-yes="1">Yes</button><button class="mini" data-presetdel="">No</button>` : `<button class="mini" data-presetdel="${id}" title="Delete this preset (owners only)">✕</button>`) : ""}</span>`; }).join("") : '<span class="sub">none saved yet</span>'}
+      <span class="presetnew"><input type="text" data-presetname data-f="presetName" maxlength="60" placeholder="Preset name, e.g. High GC" value="${esc(D.presetName || "")}"><button class="mini" data-act="presetsave" title="Save the lanes chosen below, in this order, under this name. An existing preset with the same name is replaced.">Save these lanes as a preset</button></span></div>`;
+    return `${presets}${order}<div class="picks">${box('data-sp="ladder"', D.lanes.some((L) => L.sp === "ladder"), "<b>Ladder</b>", "A ladder lane; it goes in lane 1")}${box('data-sp="uncut"', D.lanes.some((L) => L.sp === "uncut"), "<b>Uncut</b>", "A lane of uncut DNA")}${enz}</div>
       <p class="tiny">^ marks where the enzyme cuts${g ? "; the number in brackets is how many times it cuts this genome" : ""}. <a href="#/enzymes" target="_blank" rel="noopener">Enzyme details</a></p>`;
   }
   const CALL_BTN = [["Digestion", "✓", "ok", "Digests: the lab gel shows the enzyme cut the DNA"], ["Partial digestion", "~", "warn", "Partial digestion: some DNA cut, some left uncut"], ["No digestion", "✗", "bad", "Does not digest: the DNA is uncut in the lab gel"], ["Uninterpretable", "?", "mute", "Undetermined: the lane cannot be read"]];
@@ -367,7 +470,8 @@
       <tr><th>${k.ctl ? "Control digest" : "Lab digest"}</th>${lab}</tr><tr><th>Virtual digest</th>${virt}</tr><tr class="cmp"><th></th>${verdict}</tr></tbody></table></div>`;
   }
   // The gel pair: the lab image on the left, the virtual digest on the right, with a guide line that can be dragged across both.
-  function gelPair(kind) {
+  // The tools, then `above` (the result rows), then the lab and virtual images side by side.
+  function gelPair(kind, above) {
     const D = S.D, k = K(kind);
     const from = k.img && !k.ownImg ? ` <span class="sub">from ${srcName(k.img)}</span>` : "";
     const empty = k.ctl ? "No control digest image yet. Add one under <b>Control image and control DNA</b> below." : "No lab digest image yet. Add one under <b>Gel image and date</b> below.";
@@ -381,6 +485,7 @@
         <label class="check"><input type="checkbox" data-guide${S.guide.on ? " checked" : ""}>guide line</label>
         <span class="dl">Download: <button class="mini" data-dl="lab"${k.img ? "" : " disabled"}>${k.ctl ? "control" : "lab"} digest</button><button class="mini" data-dl="virtual"${k.seq && D.lanes.length ? "" : " disabled"}>virtual digest</button><button class="mini" data-dl="both"${k.img && k.seq && D.lanes.length ? "" : " disabled"}>both together</button></span>
       </div>
+      ${above || ""}
       <div class="two gels" id="gels">
         ${S.guide.on ? `<div class="guide" id="guide" style="top:${S.guide.y}px" title="Drag up or down to compare band positions"><span>drag</span></div>` : ""}
         <div><b>${k.title}</b>${from}${k.img ? `<img class="big" src="${esc(k.img)}" alt="${k.title}" draggable="false">` : `<div class="empty">${empty}</div>`}
@@ -417,10 +522,9 @@
       <details class="sec" data-sec="enz"${openEnz ? " open" : ""}><summary><b>Enzymes and lane order:</b> ${D.lanes.length ? `${esc(D.lanes.map(laneName).join(", "))} <span class="sub">(change)</span>` : '<span class="sub">tick the lanes on the gel and put them in order</span>'}</summary>${enzymePicker()}</details>
       <div class="tabs">${tab("digest", "Digest", enz.length ? (unset ? `${enz.length - unset}/${enz.length}` : "✓") : "")}${tab("control", "Control", hasControl ? (cunset ? `${enz.length - cunset}/${enz.length}` : "✓") : "optional")}</div>
       ${ctl ? `<p class="sub">The control uses the same enzymes and lane order as the digest. It shows whether the enzymes and conditions worked, using a DNA known to cut (${esc(k.dnaName)}).</p>` : ""}
-      <h4>${ctl ? "Control result for each enzyme" : "Result for each enzyme"}${ctl && enz.length ? ' <button class="mini" data-act="ctlall" title="The expected result: every enzyme cuts the control DNA">Set all to ✓ digests</button> <button class="mini" data-act="ctlclear">Clear all</button>' : ""}</h4>
+      ${gelPair(S.tab, `<h4>${ctl ? "Control result for each enzyme" : "Result for each enzyme"}${ctl && enz.length ? ' <button class="mini" data-act="ctlall" title="The expected result: every enzyme cuts the control DNA">Set all to ✓ digests</button> <button class="mini" data-act="ctlclear">Clear all</button>' : ""}</h4>
       ${laneStrip(S.tab)}
-      ${!ctl && anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}
-      ${gelPair(S.tab)}
+      ${!ctl && anyBlocked && D.control !== true ? '<div class="note bad">A lane is <b>blocked</b> (the genome has sites but the gel shows no cut). Blocked results are only counted when the control digested as expected: answer that beside Save.</div>' : ""}`)}
       ${ctl
         ? `<details class="sec" data-sec="ctl"${openCtl ? " open" : ""}><summary><b>Control image and control DNA</b> <span class="sub">${[D.controlPath ? "control image added" : "no control image", esc(k.dnaName)].join(" · ")}</span></summary>${controlDetails()}</details>`
         : `<details class="sec" data-sec="gel"${openGel ? " open" : ""}><summary><b>Gel image and date</b> <span class="sub">${[D.date || "no date", k.ownImg ? "own gel image" : k.img ? `gel from ${srcName(k.img)}` : "no gel image"].join(" · ")}</span></summary>${gelDetails()}</details>`}
@@ -479,6 +583,7 @@
     else if (route.name === "digest" && S.D) app.innerHTML = viewDigest();
     else if (route.name === "phage" && S.phage) app.innerHTML = viewPhage();
     else if (route.name === "enzymes") app.innerHTML = viewEnzymes();
+    else if (route.name === "analysis") app.innerHTML = viewAnalysis();
     else app.innerHTML = viewList();
     if (keepKey) { const f = app.querySelector(`input[data-lf="${keepKey}"]`); if (f) { f.focus(); f.setSelectionRange(keep, keep); } }
   }
@@ -488,6 +593,7 @@
       if (!S.user || !S.role) { render(); return; }
       if (!S.catalog.length) await loadBase();
       if (h[0] === "enzymes") { S.D = null; route = { name: "enzymes" }; render(); return; }
+      if (h[0] === "analysis") { S.D = null; route = { name: "analysis" }; S.an.loaded = false; render(); await loadAnalysis(); render(); return; }
       if (h[0] === "phage" && h[1]) {
         if (!S.phage || S.phage.phage_id !== h[1]) await loadPhage(h[1]);
         if (!S.phage) { location.hash = "#/"; return; }
@@ -528,6 +634,9 @@
     if (!D) return;
     if (t.dataset.act === "save") { save(); return; }
     if (t.dataset.act === "togglevirtual") { D.showStoredVirtual = !D.showStoredVirtual; render(); return; }
+    if (t.dataset.preset) { applyPreset(t.dataset.preset); render(); return; }
+    if (t.dataset.act === "presetsave") { const f = app.querySelector("[data-presetname]"); savePreset(f ? f.value : D.presetName); return; }
+    if (t.dataset.presetdel !== undefined) { if (t.dataset.yes) await deletePreset(t.dataset.presetdel); else S.presetDel = t.dataset.presetdel || null; render(); return; }
     if (t.dataset.add) { addLane(t.dataset.add); render(); return; }
     if (t.dataset.control) { D.control = t.dataset.control === "true"; S.msg = ""; render(); return; }
     if (t.dataset.call !== undefined) { const L = D.lanes[Number(t.dataset.call)]; if (L && !L.sp) { K(S.tab).set(L, t.dataset.val); S.msg = ""; render(); } return; }
@@ -542,6 +651,7 @@
     const t = ev.target, D = S.D;
     if (t.id === "pagesize") { S.pageSize = Number(t.value) || 25; S.page = 0; render(); return; }
     if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.page = 0; render(); return; }
+    if (t.dataset.an && t.tagName === "SELECT") { S.an[t.dataset.an] = t.value; render(); return; }
     if (!D) return;
     if (t.dataset.pick) { toggleEnzyme(t.dataset.pick, t.checked); render(); return; }
     if (t.dataset.gelopt) { GEL_OPT[t.dataset.gelopt] = t.checked; saveGelOpt(); render(); return; }
@@ -579,6 +689,13 @@
     else if (ev.target.dataset && ev.target.dataset.f && S.D) S.D[ev.target.dataset.f] = ev.target.value;
   });
   document.addEventListener("toggle", (ev) => { const k = ev.target.dataset && ev.target.dataset.sec; if (k) S.open[k] = ev.target.open; }, true);
+  // The analysis text filter redraws as you type and keeps the cursor where it was.
+  document.addEventListener("input", (ev) => {
+    const t = ev.target;
+    if (!t.dataset || t.dataset.an !== "q") return;
+    S.an.q = t.value; const pos = t.selectionStart; render();
+    const f = app.querySelector('input[data-an="q"]'); if (f) { f.focus(); f.setSelectionRange(pos, pos); }
+  });
   window.addEventListener("hashchange", go);
 
   (async function start() {
