@@ -440,13 +440,49 @@
       </tbody></table></div>
       <p class="tiny">✓ digests · ~ partial digestion · ✗ does not digest · ? undetermined. <b>Blocked</b>: the genome sequence has sites for the enzyme but the lab gel shows no cut, which points to DNA modification. * the control digest for that gel has not been confirmed, or no control was run, so the result is provisional. A grey ✗ means the genome has no sites, so no cut is expected; a red ✗ means there is no genome sequence to compare with. Each cell shows the phage's most recent digest with that enzyme. Click a row to open the phage.</p></div>`;
   }
+  // One card per digest image: the picture already on the phage record first, then each uploaded replicate gel.
+  const ownGel = (x) => publicUrl(x.gel_image_path) || x.gel_image_url || "";
+  function imageCards() {
+    const p = S.phage, base = phageGel();
+    const byDate = S.digests.slice().sort((x, y) => String(x.experiment_date || "9999").localeCompare(String(y.experiment_date || "9999")) || String(x.created_at || "").localeCompare(String(y.created_at || "")));
+    const shared = byDate.filter((x) => !ownGel(x)), cards = [];
+    if (base || shared.length || !byDate.length) cards.push({ img: base, title: base ? `from ${srcName(base)}` : "no image yet", exps: shared, canAdd: true });
+    for (const x of byDate.filter(ownGel)) cards.push({ img: ownGel(x), title: "uploaded replicate", exps: [x] });
+    const line = (x) => {
+      const n = (Array.isArray(x.lane_layout) ? x.lane_layout : []).filter((t) => t !== "L" && t !== "U").length;
+      const done = S.results.filter((r) => r.restriction_digest_experiment_id === x.restriction_digest_experiment_id && r.observed_result).length, started = n > 0 || done > 0;
+      return `<div class="row"><span class="sub">${esc(x.experiment_date || "no date")} · ${started ? `${done} of ${Math.max(n, done)} results entered` : "no results yet"}</span><a class="btn${started ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}">${started ? "Edit digest result" : "Add digest result"}</a></div>`;
+    };
+    return `<div class="two">${cards.map((c, i) => `<div class="imgbox"><div class="row"><b>Digest image ${i + 1}</b> <span class="sub">${esc(c.title)}</span></div>
+        ${c.img ? `<a href="${esc(c.img)}" target="_blank" rel="noopener"><img src="${esc(c.img)}" alt="Restriction digest"></a>` : '<div class="empty">No digest image yet. Add one below, or record a result without an image.</div>'}
+        ${c.exps.map(line).join("")}
+        ${c.canAdd ? `<div class="row"><span class="sub">${c.exps.length ? "Another reading of this image" : ""}</span><a class="btn${c.exps.length ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/new">Add digest result</a></div>` : ""}</div>`).join("")}</div>
+      <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>`;
+  }
+  // A replicate starts as a digest that holds only its gel image; the enzymes and results are added from its card.
+  async function addReplicateImage(file) {
+    const id = uuid();
+    S.busy = "Preparing the image…"; S.msg = ""; render();
+    try {
+      const r = await resizeImage(file), path = `${S.phage.phage_id}/${id}/gel-${Date.now()}.jpg`;
+      S.busy = `Uploading (${Math.round(r.blob.size / 1024)} KB)…`; render();
+      const up = await sb.storage.from(CFG.IMAGE_BUCKET).upload(path, r.blob, { contentType: "image/jpeg", upsert: false });
+      if (up.error) throw up.error;
+      const ins = await sb.from("restriction_digest_experiments").insert({ restriction_digest_experiment_id: id, phage_id: S.phage.phage_id, gel_image_path: path, lane_layout: [] });
+      if (ins.error) throw ins.error;
+      await loadBase(); await loadPhage(S.phage.phage_id);
+      S.msg = "Digest image added. Use Add digest result on its card to record the enzymes and results.";
+    } catch (err) { S.msg = `Image not added: ${err.message || err}`; }
+    S.busy = ""; render();
+  }
   function viewPhage() {
     const p = S.phage;
     return `<p><a href="#/">← All phages</a></p>
       <div class="card"><h2>${esc(p.phage_name)} <span class="sub">Rud Lab ID ${esc(labId(p))}</span></h2>
       <p class="sub">${esc([p.host_genus, p.host_species, p.host_strain].filter(Boolean).join(" "))}${p.phagesdb_cluster ? " · Cluster " + esc(p.phagesdb_subcluster || p.phagesdb_cluster) : ""}${p.genome_length_bp ? " · " + fmt(p.genome_length_bp) + " bp" : " · no genome sequence yet"}</p>
-      ${phageGel() || phageVirtual() ? `<div class="two">${phageGel() ? `<div class="imgbox"><b>Digest image from ${srcName(phageGel())}</b><a href="${esc(phageGel())}" target="_blank" rel="noopener"><img src="${esc(phageGel())}" alt="Restriction digest"></a></div>` : ""}${phageVirtual() ? `<div class="imgbox"><b>Virtual digest image from ${srcName(phageVirtual())}</b><a href="${esc(phageVirtual())}" target="_blank" rel="noopener"><img src="${esc(phageVirtual())}" alt="Virtual digest"></a></div>` : ""}</div>` : ""}
-      <div class="row"><h3 style="margin:0">Restriction digests</h3><a class="btn primary" href="#/phage/${p.phage_id}/digest/new">+ New digest</a></div>
+      <h3>Digest images</h3>
+      ${imageCards()}
+      <h3>Digest results</h3>
       ${S.digests.length ? `<table class="list"><thead><tr><th>Date</th><th>Lanes</th><th>Plan</th><th>Lab gel</th><th>Compared</th><th>Blocked</th></tr></thead><tbody>${S.digests.map((x) => {
         const st = stageOf(x, S.results); st.lab = st.lab || !!phageGel(); const rs = S.results.filter((r) => r.restriction_digest_experiment_id === x.restriction_digest_experiment_id);
         const lanes = (Array.isArray(x.lane_layout) ? x.lane_layout : []).map((t) => (t === "L" ? "ladder" : t === "U" ? "uncut" : enzyme(t).enzyme_name || "?"));
@@ -664,7 +700,7 @@
           if (!S.D || (h[3] !== "new" && S.D.id !== h[3]) || (h[3] === "new" && !S.D.isNew)) openDigest(h[3]);
           route = { name: "digest" }; render(); loadGenome(); return;
         }
-        S.D = null; route = { name: "phage" }; render(); return;
+        S.D = null; S.msg = ""; route = { name: "phage" }; render(); return;
       }
       S.D = null; route = { name: "list" };
       const want = new URLSearchParams(location.search).get("phage");
@@ -725,6 +761,7 @@
     if (t.id === "pagesize") { S.pageSize = Number(t.value) || 25; S.page = 0; render(); return; }
     if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.page = 0; render(); return; }
     if (t.dataset.an && t.tagName === "SELECT") { S.an[t.dataset.an] = t.value; render(); return; }
+    if (t.dataset.replicate !== undefined && t.files[0] && S.phage) { addReplicateImage(t.files[0]); return; }
     if (t.dataset.petoggle && S.pe) {
       const k = t.dataset.petoggle, L = S.pe.lanes;
       if (!t.checked) S.pe.lanes = L.filter((x) => x !== k);

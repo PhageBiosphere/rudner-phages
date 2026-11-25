@@ -14,6 +14,8 @@ A small website for lab members to record restriction enzyme digests of phage DN
 
 The **Analysis** page lists every phage that has results, with one column per enzyme. It can be filtered to the phages with a **blocked** enzyme (the genome has sites but the gel shows no cut), to one enzyme, or by phage name or cluster.
 
+Each phage page shows its **digest images** as cards: the picture already on the phage record, then any replicate gels uploaded with **+ Add a digest image**. Every card has an **Add digest result** button (or **Edit digest result** once results exist).
+
 A digest can be saved at any point: with only the enzymes chosen, with only the gel, or with some results still to enter.
 
 ## Files
