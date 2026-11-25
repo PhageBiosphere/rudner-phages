@@ -451,11 +451,11 @@
     const line = (x) => {
       const n = (Array.isArray(x.lane_layout) ? x.lane_layout : []).filter((t) => t !== "L" && t !== "U").length;
       const done = S.results.filter((r) => r.restriction_digest_experiment_id === x.restriction_digest_experiment_id && r.observed_result).length, started = n > 0 || done > 0;
-      return `<div class="row"><span class="sub">${esc(x.experiment_date || "no date")} · ${started ? `${done} of ${Math.max(n, done)} results entered` : "no results yet"}</span><a class="btn${started ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}">${started ? "Edit digest result" : "Add digest result"}</a></div>`;
+      return `<div class="row res"><a class="btn${started ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}">${started ? "Edit digest result" : "Add digest result"}</a><span class="sub">${esc(x.experiment_date || "no date")} · ${started ? `${done} of ${Math.max(n, done)} results entered` : "no results yet"}</span></div>`;
     };
     return `<div class="two">${cards.map((c, i) => `<div class="imgbox"><div class="row"><b>Digest image ${i + 1}</b> <span class="sub">${esc(c.title)}</span></div>
         ${c.exps.map(line).join("")}
-        ${c.canAdd ? `<div class="row"><span class="sub">${c.exps.length ? "Another reading of this image" : ""}</span><a class="btn${c.exps.length ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/new">Add digest result</a></div>` : ""}
+        ${c.canAdd ? `<div class="row res"><a class="btn${c.exps.length ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/new">Add digest result</a><span class="sub">${c.exps.length ? "another reading of this image" : ""}</span></div>` : ""}
         ${c.img ? `<a href="${esc(c.img)}" target="_blank" rel="noopener"><img src="${esc(c.img)}" alt="Restriction digest"></a>` : '<div class="empty">No digest image yet. Add one below, or record a result without an image.</div>'}</div>`).join("")}</div>
       <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>`;
   }
