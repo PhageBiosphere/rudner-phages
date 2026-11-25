@@ -12,7 +12,7 @@ A small website for lab members to record restriction enzyme digests of phage DN
 - **Lab digest** on the left (an uploaded image, or the one on PhagesDB) and the **virtual digest** on the right, drawn from the DNA sequence in the same lane order.
 - **Gel image, date and control** (a section that opens and closes): upload a gel, record the date and ladder, and add an optional control digest (lambda by default).
 
-The **Analysis** page lists every phage that has results, with one column per enzyme. It can be filtered to the phages with a **blocked** enzyme (the genome has sites but the gel shows no cut), to one enzyme, or by phage name or cluster.
+The **Analysis** page lists every phage that has results, with one column per enzyme. A **summary figure** at the top counts, for each host, cluster or subcluster, the phages blocked out of the phages tested with each enzyme. It can be filtered to the phages with a **blocked** enzyme (the gel shows no cut although the genome has sites; with no genome sequence a ✗ is presumed blocked), by how many enzymes are blocked, by whether the phage is sequenced, to one enzyme, or by phage name or cluster. **Show sequencing candidates** lists unsequenced phages with three or more blocked enzymes, and **Recompute virtual digests** fills in the virtual result for every sequenced phage.
 
 Each phage page shows its **digest images** as cards: the picture already on the phage record, then any replicate gels uploaded with **+ Add a digest image**. Every card has an **Add digest result** button (or **Edit digest result** once results exist).
 
