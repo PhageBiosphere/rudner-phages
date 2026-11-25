@@ -11,6 +11,8 @@
 
   const S = {
     user: null, role: null, name: "",
+    pe: null,              // the preset being added or edited on the enzyme page: {id, name, lanes:[tokens]}
+    ez: null, ezMsg: "",   // the add-enzyme form: last typed values and its message
     presets: [], presetDel: null,   // named lane lists shared by the lab; presetDel = the one an owner is about to delete
     catalog: [], enzymes: [], digestIndex: new Map(),   // phage_id -> [{experiment summary}]
     phage: null, digests: [], results: [],
@@ -312,12 +314,73 @@
       ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 2}" class="sub">No phage matches these filters.</td></tr>`}
       </tbody></table></div>${pager}</div>`;
   }
+  // ---------- the enzyme page: preset lists, the enzyme catalogue, and (owners) adding an enzyme ----------
+  const tokName = (t) => (t === "L" ? "Ladder" : t === "U" ? "Uncut" : enzyme(t).enzyme_name || "(enzyme no longer listed)");
+  function presetEditor() {
+    const E = S.pe, last = E.lanes.length - 1;
+    const box = (tok, label) => { const on = E.lanes.includes(tok); return `<label class="pick${on ? " on" : ""}"><input type="checkbox" data-petoggle="${tok}"${on ? " checked" : ""}><span>${label}</span></label>`; };
+    return `<div class="pe"><label class="check"><b>Preset name</b> <input type="text" data-pename maxlength="60" value="${esc(E.name)}" placeholder="for example Low GC phages"></label>
+      ${E.lanes.length ? `<div class="order"><span class="sub">Lane order:</span>${E.lanes.map((t, i) => `<span class="ord${t === "L" || t === "U" ? " sp" : ""}"><button class="mini" data-pemove="${i}" data-dir="-1"${i ? "" : " disabled"} title="Move one lane to the left">◀</button><b>${esc(tokName(t))}</b><button class="mini" data-pemove="${i}" data-dir="1"${i < last ? "" : " disabled"} title="Move one lane to the right">▶</button></span>`).join("")}<button class="mini" data-pe="addladder" title="Add another ladder lane at the end">+ ladder</button></div>` : ""}
+      <div class="picks">${box("L", "<b>Ladder</b>")}${box("U", "<b>Uncut</b>")}${S.enzymes.map((z) => box(z.restriction_enzyme_id, `<b>${esc(z.enzyme_name)}</b> <span class="mono">${esc(cutSite(z))}</span>`)).join("")}</div>
+      <p class="tiny">Tick the lanes on the gel; a newly ticked enzyme goes to the end, and the arrows change the order.</p>
+      <div class="row"><button class="primary" data-pe="save">Save preset</button><button data-pe="cancel">Cancel</button><span class="msg">${esc(S.msg)}</span></div></div>`;
+  }
+  async function savePresetEdit() {
+    const E = S.pe, name = E.name.trim().slice(0, 60);
+    if (!name) { S.msg = "Give the preset a name."; render(); return; }
+    if (!E.lanes.some((t) => t !== "L" && t !== "U")) { S.msg = "Tick at least one enzyme."; render(); return; }
+    const clash = S.presets.find((x) => x.restriction_enzyme_preset_id !== E.id && x.preset_name.trim().toLowerCase() === name.toLowerCase());
+    if (clash) { S.msg = `There is already a preset called "${clash.preset_name}". Choose another name.`; render(); return; }
+    const r = E.id
+      ? await sb.from("restriction_enzyme_presets").update({ preset_name: name, lane_layout: E.lanes }).eq("restriction_enzyme_preset_id", E.id)
+      : await sb.from("restriction_enzyme_presets").insert({ preset_name: name, lane_layout: E.lanes });
+    if (r.error) S.msg = `Preset not saved: ${r.error.message || r.error}`;
+    else { await loadPresets(); S.pe = null; S.msg = `Preset "${name}" saved.`; }
+    render();
+  }
+  const ENZ_FIELDS = [["enzyme_name", "Name", "EcoRI", true], ["recognition_sequence", "Recognition sequence", "GAATTC", true], ["cut_description", "Cut site (optional)", "G^AATTC"], ["modification_sensitivity", "Sensitivity to DNA modification (optional)", ""], ["diagnostic_group", "Diagnostic group (optional)", ""], ["notes", "Notes (optional)", ""]];
+  async function addEnzyme(v) {
+    S.ez = v;
+    const fail = (m) => { S.ezMsg = m; render(); };
+    const name = v.enzyme_name.trim(), seq = v.recognition_sequence.toUpperCase().replace(/\s+/g, ""), cut = v.cut_description.toUpperCase().replace(/\s+/g, "");
+    if (!name) return fail("Type the enzyme's name.");
+    if (!/^[ACGTRYSWKMBDHVN]{4,20}$/.test(seq)) return fail("The recognition sequence should be 4 or more DNA letters with no spaces: A, C, G, T, or the codes R Y S W K M B D H V N.");
+    if (cut && ((cut.match(/[\^/]/g) || []).length !== 1 || cut.replace(/[\^/]/g, "") !== seq)) return fail("The cut site should be the recognition sequence with one ^ where the enzyme cuts, for example G^AATTC. It can be left empty.");
+    const dup = await sb.from("restriction_enzymes").select("restriction_enzyme_id,enzyme_name,active").ilike("enzyme_name", name);
+    if (dup.error) return fail(`Not added: ${dup.error.message || dup.error}`);
+    const old = (dup.data || [])[0];
+    if (old && old.active) return fail(`${old.enzyme_name} is already in the list.`);
+    const row = { recognition_sequence: seq, cut_description: cut || null, modification_sensitivity: v.modification_sensitivity.trim() || null, diagnostic_group: v.diagnostic_group.trim() || null, notes: v.notes.trim() || null, active: true };
+    const r = old
+      ? await sb.from("restriction_enzymes").update(row).eq("restriction_enzyme_id", old.restriction_enzyme_id)
+      : await sb.from("restriction_enzymes").insert({ enzyme_name: name, ...row });
+    if (r.error) return fail(`Not added: ${r.error.message || r.error}`);
+    const enz = await sb.from("restriction_enzymes").select("*").eq("active", true).order("enzyme_name");
+    if (!enz.error) S.enzymes = enz.data || [];
+    S.ez = null;
+    S.ezMsg = old ? `${old.enzyme_name} was already in the catalogue but switched off. It is active again, with the details typed here.` : `${name} added. It can now be chosen on every digest and in every preset.`;
+    render();
+  }
   function viewEnzymes() {
-    return `<p><a href="#/">← All phages</a></p><div class="card"><h2>Enzyme details</h2>
+    const owner = S.role === "owner", E = S.pe, Z = S.ez || {};
+    const prow = (P) => {
+      const id = P.restriction_enzyme_preset_id;
+      if (E && E.id === id) return `<tr><td colspan="3">${presetEditor()}</td></tr>`;
+      return `<tr><td><b>${esc(P.preset_name)}</b></td><td>${esc(presetLabel(P))}</td><td class="acts"><button class="mini" data-pe="edit" data-id="${id}">Edit</button>${owner ? (S.presetDel === id ? ` <span class="sub">Delete?</span> <button class="mini" data-presetdel="${id}" data-yes="1">Yes</button> <button class="mini" data-presetdel="">No</button>` : ` <button class="mini" data-presetdel="${id}">Delete</button>`) : ""}</td></tr>`;
+    };
+    return `<p><a href="#/">← All phages</a></p>
+      <div class="card"><h2>Preset lists <span class="sub">lanes in gel order, chosen with one click on a digest</span></h2>
+      ${S.presets.length ? `<table class="list"><thead><tr><th>Preset</th><th>Lanes, in order</th><th></th></tr></thead><tbody>${S.presets.map(prow).join("")}</tbody></table>` : '<p class="sub">No presets saved yet.</p>'}
+      ${E && !E.id ? `<h4>New preset</h4>${presetEditor()}` : E ? "" : `<div class="row"><button class="primary" data-pe="new">+ New preset</button><span class="msg">${esc(S.msg)}</span></div>`}
+      <p class="tiny">Changing or deleting a preset does not change digests that were already saved with it.${owner ? "" : " Only an owner can delete a preset."}</p></div>
+      <div class="card"><h2>Enzyme details</h2>
       <p class="sub">The restriction enzymes in the lab's catalogue. This page is the same for every phage; the number of cuts and the predicted fragments depend on the genome and are shown on each digest.</p>
       <table class="list"><thead><tr><th>Enzyme</th><th>Recognition sequence</th><th>Cut</th><th>Sensitivity to DNA modification</th><th>Diagnostic group</th><th>Notes</th></tr></thead><tbody>
       ${S.enzymes.map((z) => `<tr><td><b>${esc(z.enzyme_name)}</b></td><td class="mono">${esc(z.recognition_sequence)}</td><td class="mono">${esc(cutSite(z))}</td><td>${esc(z.modification_sensitivity || "")}</td><td>${esc(z.diagnostic_group || "")}</td><td class="tiny">${esc(z.notes || "")}</td></tr>`).join("")}
-      </tbody></table></div>`;
+      </tbody></table>
+      ${owner ? `<form id="enzadd" class="enzadd"><h4>Add a restriction enzyme</h4><div class="grid">${ENZ_FIELDS.map((f) => `<label>${f[1]}<input name="${f[0]}" maxlength="${f[0] === "notes" || f[0] === "modification_sensitivity" ? 300 : 60}" value="${esc(Z[f[0]] || "")}" placeholder="${f[2]}"${f[3] ? " required" : ""}></label>`).join("")}</div>
+        <div class="row"><button class="primary">Add enzyme</button><span class="msg">${esc(S.ezMsg)}</span></div></form>` : '<p class="tiny">Only a lab owner can add an enzyme to the catalogue.</p>'}
+      </div>`;
   }
   // ---------- analysis: every phage with recorded results, one column per enzyme ----------
   // The server returns at most 1,000 rows at a time, so a whole table is read page by page.
@@ -592,7 +655,7 @@
     try {
       if (!S.user || !S.role) { render(); return; }
       if (!S.catalog.length) await loadBase();
-      if (h[0] === "enzymes") { S.D = null; route = { name: "enzymes" }; render(); return; }
+      if (h[0] === "enzymes") { S.D = null; S.pe = null; S.presetDel = null; S.msg = ""; S.ezMsg = ""; route = { name: "enzymes" }; render(); return; }
       if (h[0] === "analysis") { S.D = null; route = { name: "analysis" }; S.an.loaded = false; render(); await loadAnalysis(); render(); return; }
       if (h[0] === "phage" && h[1]) {
         if (!S.phage || S.phage.phage_id !== h[1]) await loadPhage(h[1]);
@@ -630,13 +693,23 @@
     if (t.dataset.act === "clearfilters") { for (const k in S.filters) S.filters[k] = ""; S.page = 0; render(); return; }
     if (t.id === "signout") { await sb.auth.signOut(); S.user = null; S.role = null; S.catalog = []; S.phage = null; S.D = null; render(); return; }
     if (t.dataset.go) { location.hash = t.dataset.go; return; }
+    if (t.dataset.presetdel !== undefined) { if (t.dataset.yes) await deletePreset(t.dataset.presetdel); else S.presetDel = t.dataset.presetdel || null; render(); return; }
+    if (t.dataset.pe) {
+      const a = t.dataset.pe;
+      if (a === "save") { if (S.pe) await savePresetEdit(); return; }
+      if (a === "new") S.pe = { id: null, name: "", lanes: ["L", "U"] };
+      else if (a === "edit") { const P = S.presets.find((x) => x.restriction_enzyme_preset_id === t.dataset.id); if (P) S.pe = { id: P.restriction_enzyme_preset_id, name: P.preset_name, lanes: (Array.isArray(P.lane_layout) ? P.lane_layout : []).slice() }; }
+      else if (a === "cancel") S.pe = null;
+      else if (a === "addladder" && S.pe) S.pe.lanes.push("L");
+      S.msg = ""; S.presetDel = null; render(); return;
+    }
+    if (t.dataset.pemove !== undefined && S.pe) { const L = S.pe.lanes, i = Number(t.dataset.pemove), j = i + Number(t.dataset.dir); if (j >= 0 && j < L.length) { const x = L[i]; L[i] = L[j]; L[j] = x; render(); } return; }
     const D = S.D;
     if (!D) return;
     if (t.dataset.act === "save") { save(); return; }
     if (t.dataset.act === "togglevirtual") { D.showStoredVirtual = !D.showStoredVirtual; render(); return; }
     if (t.dataset.preset) { applyPreset(t.dataset.preset); render(); return; }
     if (t.dataset.act === "presetsave") { const f = app.querySelector("[data-presetname]"); savePreset(f ? f.value : D.presetName); return; }
-    if (t.dataset.presetdel !== undefined) { if (t.dataset.yes) await deletePreset(t.dataset.presetdel); else S.presetDel = t.dataset.presetdel || null; render(); return; }
     if (t.dataset.add) { addLane(t.dataset.add); render(); return; }
     if (t.dataset.control) { D.control = t.dataset.control === "none" ? "none" : t.dataset.control === "true"; S.msg = ""; render(); return; }
     if (t.dataset.call !== undefined) { const L = D.lanes[Number(t.dataset.call)]; if (L && !L.sp) { K(S.tab).set(L, t.dataset.val); S.msg = ""; render(); } return; }
@@ -652,6 +725,12 @@
     if (t.id === "pagesize") { S.pageSize = Number(t.value) || 25; S.page = 0; render(); return; }
     if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.page = 0; render(); return; }
     if (t.dataset.an && t.tagName === "SELECT") { S.an[t.dataset.an] = t.value; render(); return; }
+    if (t.dataset.petoggle && S.pe) {
+      const k = t.dataset.petoggle, L = S.pe.lanes;
+      if (!t.checked) S.pe.lanes = L.filter((x) => x !== k);
+      else if (k === "L") L.unshift("L"); else if (k === "U") L.splice(L[0] === "L" ? 1 : 0, 0, "U"); else L.push(k);
+      render(); return;
+    }
     if (!D) return;
     if (t.dataset.pick) { toggleEnzyme(t.dataset.pick, t.checked); render(); return; }
     if (t.dataset.gelopt) { GEL_OPT[t.dataset.gelopt] = t.checked; saveGelOpt(); render(); return; }
@@ -689,6 +768,14 @@
     else if (ev.target.dataset && ev.target.dataset.f && S.D) S.D[ev.target.dataset.f] = ev.target.value;
   });
   document.addEventListener("toggle", (ev) => { const k = ev.target.dataset && ev.target.dataset.sec; if (k) S.open[k] = ev.target.open; }, true);
+  document.addEventListener("input", (ev) => { const t = ev.target; if (S.pe && t.dataset && t.dataset.pename !== undefined) S.pe.name = t.value; });
+  document.addEventListener("submit", (ev) => {
+    if (ev.target.id !== "enzadd") return;
+    ev.preventDefault();
+    const f = new FormData(ev.target), v = {};
+    for (const x of ENZ_FIELDS) v[x[0]] = String(f.get(x[0]) || "");
+    S.ezMsg = "Adding…"; addEnzyme(v);
+  });
   // The analysis text filter redraws as you type and keeps the cursor where it was.
   document.addEventListener("input", (ev) => {
     const t = ev.target;
