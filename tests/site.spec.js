@@ -340,16 +340,20 @@ test.describe("Data quality tab", () => {
 });
 
 test.describe("Scrolling tables", () => {
-  test("the Phages tab lists every phage in a box ten rows tall, with no page buttons", async ({ page }) => {
+  test("the Phages tab lists every phage in a box fifteen rows tall by default, with no page buttons", async ({ page }) => {
     await open(page, "#/");
     await expect(page.locator("table.list tbody tr")).toHaveCount(12);
     await expect(page.locator("button[data-page]")).toHaveCount(0);
     await expect(page.locator(".pager")).toContainText("12 of 12 phages");
     const m = () => page.evaluate(() => { const b = document.querySelector(".listbox"), t = b.querySelector("table"); return { box: b.clientHeight, head: t.tHead.offsetHeight, row: t.tBodies[0].rows[0].offsetHeight, scrolls: b.scrollHeight > b.clientHeight + 4, top: getComputedStyle(t.tHead.rows[0].cells[0]).position }; });
+    await expect(page.locator("select[data-lrows]")).toHaveValue("15");
     let x = await m();
+    expect(x.scrolls).toBe(false);                      // twelve phages fit in fifteen rows
+    expect(x.top).toBe("sticky");
+    await page.selectOption("select[data-lrows]", "10");
+    x = await m();
     expect(Math.abs(x.box - (x.head + 10 * x.row))).toBeLessThan(6);
     expect(x.scrolls).toBe(true);
-    expect(x.top).toBe("sticky");
     await page.selectOption("select[data-lrows]", "20");
     x = await m();
     expect(x.scrolls).toBe(false);                      // twelve phages fit in twenty rows
@@ -372,7 +376,7 @@ test.describe("Scrolling tables", () => {
 
   test("filters, sort order and scroll position are kept when coming back from a phage", async ({ page }) => {
     await open(page, "#/");
-    await page.fill('input[data-lf="strain"]', "");            // twelve phages, two more than the box shows
+    await page.selectOption("select[data-lrows]", "10");       // twelve phages, two more than the box then shows
     await page.locator("th[data-sort]").first().click();
     const order = await cells(page.locator("table.list tbody tr td:first-child"));
     await page.evaluate(() => { const b = document.querySelector(".listbox"); b.scrollTop = 40; b.dispatchEvent(new Event("scroll")); });
@@ -389,6 +393,7 @@ test.describe("Scrolling tables", () => {
     expect(saved.filters.digest).toBe("tocheck");
     expect(saved.sort).toEqual({ k: "name", dir: -1 });
     expect(saved.rows).toBe("10");
+    await page.evaluate(() => localStorage.clear());
   });
 
   test("Check next digest opens the first one in the list that needs checking", async ({ page }) => {

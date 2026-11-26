@@ -20,7 +20,7 @@
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
     D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: true, y: 160 },
-    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "", q: "" }, rows: "10", scroll: { list: 0, an: 0 }, gsrc: null, afiles: null,
+    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "", q: "" }, rows: "15", scroll: { list: 0, an: 0 }, gsrc: null, afiles: null,
     control: null,         // {seq, name}
     an: { loaded: false, raw: null, by: new Map(), checked: new Map(), queued: new Set(), sel: new Set(), qask: false, shownIds: [], show: "all", enz: "", q: "", min: "0", seq: "", host: "", chk: "", follow: false,
       sort: { k: "name", dir: 1 }, size: "20", fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, f4: { sort: { k: "ngenes", dir: -1 }, f: {}, size: "15" }, genes: [], isl: new Map(), msg: "", busy: false }   // the analysis page
@@ -41,7 +41,7 @@
   }
   const AN_DEFAULT = JSON.stringify(anState());
   // The Phages tab remembers its filters, sort order and box height between visits.
-  const ROWS_SHOWN = [["10", "10"], ["20", "20"], ["40", "40"], ["fit", "fit the window"]];
+  const ROWS_SHOWN = [["10", "10"], ["15", "15"], ["20", "20"], ["40", "40"], ["fit", "fit the window"]];
   try {
     const o = JSON.parse(localStorage.getItem("rudner.phages") || "null");
     if (o && typeof o === "object") {
@@ -1343,7 +1343,7 @@
       if (!head) continue;
       if (head.rows.length > 1) for (const c of head.rows[1].cells) c.style.top = head.rows[0].offsetHeight + "px";
       const n = box.dataset.fit, rowH = row ? row.offsetHeight : 34;
-      box.style.maxHeight = (n === "fit" ? Math.max(rowH * 6 + head.offsetHeight, window.innerHeight - Math.max(0, box.getBoundingClientRect().top) - 20) : head.offsetHeight + rowH * (Number(n) || 10) + 2) + "px";
+      box.style.maxHeight = (n === "fit" ? Math.max(rowH * 6 + head.offsetHeight, window.innerHeight - Math.max(0, box.getBoundingClientRect().top) - 20) : head.offsetHeight + rowH * (Number(n) || 15) + 2) + "px";
       const y = S.scroll[box.dataset.keep] || 0; if (y) box.scrollTop = y;
     }
   }
