@@ -67,7 +67,7 @@
     const [cat, enz, idx] = await Promise.all([
       sb.from("phage_catalog_public").select("phage_id,lab_phage_id,phage_name,host_genus,host_species,host_strain,phagesdb_cluster,phagesdb_subcluster,genome_length_bp,annotation_status,restriction_digest_image_url,virtual_digest_image_url").order("phage_name").range(0, 4999),
       sb.from("restriction_enzymes").select("*").eq("active", true).order("enzyme_name"),
-      sb.from("restriction_digest_experiments").select("restriction_digest_experiment_id,phage_id,experiment_date,gel_image_path,gel_image_url,positive_control_passed,no_control,lane_layout").range(0, 9999)
+      sb.from("restriction_digest_experiments").select("restriction_digest_experiment_id,phage_id,experiment_date,gel_image_path,gel_image_url,positive_control_passed,no_control,results_checked,lane_layout").range(0, 9999)
     ]);
     if (cat.error) throw cat.error;
     if (enz.error) throw enz.error;
@@ -100,18 +100,24 @@
     const st = await sb.from("phage_workflow_status_public").select("selected_assembly_id,assembly_label,assembly_sha256,fasta_download_url,circularized").eq("phage_id", phageId).maybeSingle();
     const rec = st.data || {};
     let text = "", source = "", label = "";
+    let labErr = "";
     if (rec.fasta_download_url) {
-      const r = await fetch(rec.fasta_download_url);
-      if (!r.ok) throw new Error(`The lab's genome file could not be downloaded (${r.status}).`);
-      text = await r.text(); source = rec.fasta_download_url; label = rec.assembly_label || "Rudner Lab assembly";
-    } else {
+      try {
+        const r = await fetch(rec.fasta_download_url);
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        text = await r.text(); source = rec.fasta_download_url; label = rec.assembly_label || "Rudner Lab assembly";
+        if (!/^\s*>/.test(text)) { text = ""; throw new Error("the address returned a web page, not a FASTA file"); }
+      } catch (err) { labErr = `The lab's genome file could not be read from where it is stored (${err.message || err}); a browser can only read it from an address that allows direct downloads.`; }
+    }
+    if (!text) {
       const px = await sb.functions.invoke("fetch-phage-fasta", { body: { phage_id: phageId } });
-      if (px.error || !px.data || !px.data.fasta) throw new Error((px.data && px.data.error) || "No genome sequence is available for this phage yet.");
+      if (px.error || !px.data || !px.data.fasta) throw new Error(labErr || (px.data && px.data.error) || "No genome sequence is available for this phage yet.");
       text = px.data.fasta; source = px.data.source_url || "PhagesDB"; label = "PhagesDB FASTA";
     }
     const f = DG.parseFasta(text);
     if (!f.seq.length) throw new Error("The genome file holds no DNA sequence.");
-    return { seq: f.seq, label, source, circular: !!rec.circularized, assembly_id: rec.selected_assembly_id || null, sha256: rec.assembly_sha256 || null };
+    const lab = source === rec.fasta_download_url;   // the assembly's id and checksum only describe the lab's own file
+    return { seq: f.seq, label, source, circular: !!rec.circularized, assembly_id: lab ? rec.selected_assembly_id || null : null, sha256: lab ? rec.assembly_sha256 || null : null };
   }
   async function loadGenome() {
     if (S.genome || !S.phage) return;
@@ -299,9 +305,10 @@
   const LIST_COLS = [["name", "Phage", (p) => p.phage_name], ["lab", "Rud Lab ID", labId], ["host", "Genus", (p) => p.host_genus], ["species", "Species", (p) => p.host_species], ["strain", "Strain", (p) => p.host_strain], ["cluster", "Cluster", (p) => p.phagesdb_cluster], ["subcluster", "Subcluster", (p) => p.phagesdb_subcluster]];
   function listRows() {
     const F = S.filters, has = (v, f) => !f || String(v || "").toLowerCase().includes(f.trim().toLowerCase());
-    const dn = (p) => (S.digestIndex.get(p.phage_id) || []).length;
+    const dn = (p) => (S.digestIndex.get(p.phage_id) || []).length, toCheck = (p) => (S.digestIndex.get(p.phage_id) || []).filter((x) => !x.results_checked).length;
     let rows = S.catalog.filter((p) => LIST_COLS.every((c) => has(c[2](p), F[c[0]]) || (c[0] === "lab" && has(p.lab_phage_id, F.lab)))
-      && (!F.genome || (F.genome === "yes") === !!p.genome_length_bp) && (!F.digest || (F.digest === "yes") === dn(p) > 0));
+      && (!F.genome || (F.genome === "yes") === !!p.genome_length_bp)
+      && (!F.digest || (F.digest === "yes" ? dn(p) > 0 : F.digest === "no" ? dn(p) === 0 : F.digest === "tocheck" ? toCheck(p) > 0 : dn(p) > 0 && toCheck(p) === 0)));
     const col = LIST_COLS.find((c) => c[0] === S.sort.k);
     const key = col ? (p) => String(col[2](p) || "").toLowerCase() : S.sort.k === "genome" ? (p) => p.genome_length_bp || 0 : dn;
     rows = rows.slice().sort((a, b) => { const x = key(a), y = key(b); if (x === "" && y !== "") return 1; if (y === "" && x !== "") return -1; return (x < y ? -1 : x > y ? 1 : 0) * S.sort.dir || (a.phage_name || "").localeCompare(b.phage_name || ""); });
@@ -319,8 +326,8 @@
       ${Object.values(F).some(Boolean) ? '<button data-act="clearfilters">Clear filters</button>' : ""}</div>`;
     return `<div class="card"><h2>Phages</h2>${pager}
       <div class="tablescroll"><table class="list sortable"><thead><tr>${LIST_COLS.map((c) => th(c[0], c[1])).join("")}${th("genome", "Genome")}${th("digest", "Restriction digests")}</tr>
-      <tr class="filters">${LIST_COLS.map((c) => tf(c[0])).join("")}${sf("genome", "has a sequence", "no sequence")}${sf("digest", "has a digest", "none yet")}</tr></thead><tbody>
-      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 2}" class="sub">No phage matches these filters.</td></tr>`}
+      <tr class="filters">${LIST_COLS.map((c) => tf(c[0])).join("")}${sf("genome", "has a sequence", "no sequence")}<td><select data-lf="digest">${[["", "all"], ["tocheck", "need checking"], ["checked", "all checked"], ["yes", "has a digest"], ["no", "none yet"]].map((o) => `<option value="${o[0]}"${F.digest === o[0] ? " selected" : ""}>${o[1]}</option>`).join("")}</select></td></tr></thead><tbody>
+      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") + (d.some((x) => !x.results_checked) ? " " + chip(d.length === 1 ? "to check" : `${d.filter((x) => !x.results_checked).length} to check`, "warn") : " " + chip("checked", "ok")) : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 2}" class="sub">No phage matches these filters.</td></tr>`}
       </tbody></table></div>${pager}</div>`;
   }
   // ---------- the enzyme page: preset lists, the enzyme catalogue, and (owners) adding an enzyme ----------
@@ -462,7 +469,7 @@
     }
     try { await loadAnalysis(); } catch (err) { failed.push(`reading the results again (${err.message || err})`); }
     A.busy = false;
-    A.msg = `Virtual digests filled in for ${fmt(changed)} results of ${done} phage${done === 1 ? "" : "s"}.${failed.length ? ` Not done for ${failed.length}: ${failed.slice(0, 4).join("; ")}${failed.length > 4 ? " …" : ""}` : ""}`;
+    A.msg = `Virtual digests filled in for ${done} phage${done === 1 ? "" : "s"} (${fmt(changed)} enzyme results in total).${failed.length ? ` Not done for ${failed.length}: ${failed.slice(0, 4).join("; ")}${failed.length > 4 ? " …" : ""}` : ""}`;
     render();
   }
   // Adds the ticked phages to the lab's sequencing queue (the same queue as on the phage database page).
@@ -752,7 +759,7 @@
     const D = S.D, k = K(kind), cols = D.lanes.map((L, i) => ({ L, i })).filter((x) => !x.L.sp);
     if (!cols.length) return '<div class="note warn">No enzymes chosen yet. Open <b>Enzymes and lane order</b> above to choose them.</div>';
     const blk = (L) => !k.ctl && isBlocked(L);
-    const head = cols.map(({ L, i }) => `<th class="${blk(L) ? "blk" : ""}" title="${esc(cutSite(enzyme(L.id)))}"><span class="ln">lane ${i + 1}</span>${esc(laneName(L))}</th>`).join("");
+    const head = cols.map(({ L, i }, n) => `<th class="${blk(L) ? "blk" : ""}" title="${esc(cutSite(enzyme(L.id)))}"><span class="ln">lane ${i + 1}</span><span class="mv"><button class="mini" data-emove="${i}" data-dir="-1"${n ? "" : " disabled"} title="Move this enzyme one place to the left; its result moves with it">◀</button>${esc(laneName(L))}<button class="mini" data-emove="${i}" data-dir="1"${n < cols.length - 1 ? "" : " disabled"} title="Move this enzyme one place to the right; its result moves with it">▶</button></span></th>`).join("");
     const lab = cols.map(({ L, i }) => { const o = k.get(L); return `<td class="${blk(L) ? "blk" : ""}"><div class="cb">${CALL_BTN.map((b) => `<button class="call ${o === b[0] ? "on " + b[2] : o ? "" : "unset"}" data-call="${i}" data-val="${b[0]}" title="${b[3]}" aria-label="${b[0]}">${b[1]}</button>`).join("")}</div></td>`; }).join("");
     const virt = cols.map(({ L }) => { const c = k.cuts(L.id), v = k.vcall(L.id); return `<td class="${blk(L) ? "blk" : ""}" title="${c ? (c.sites ? `Fragments: ${c.fragments.slice(0, 8).map(fmt).join(", ")}${c.fragments.length > 8 ? " …" : ""} bp` : "No recognition sites in this DNA, so this lane should stay uncut") : "No sequence yet"}">${!v ? '<span class="sub">—</span>' : v === "Digestion" ? `<span class="t-ok">✓</span> ${c ? `${c.sites} cut${c.sites === 1 ? "" : "s"}` : "digests"}` : `<span class="t-bad">✗</span> ${c ? "0 cuts" : "no digestion"}`}</td>`; }).join("");
     const verdict = cols.map(({ L }) => { const v = k.vcall(L.id), o = k.get(L); return `<td class="${blk(L) ? "blk" : ""}">${!o ? '<span class="t-warn">not set</span>' : !v ? "" : blk(L) ? '<b class="t-bad">blocked</b>' : v === o ? '<span class="t-ok">as predicted</span>' : o === "Partial digestion" ? '<span class="t-warn">partial</span>' : o === "Uninterpretable" ? '<span class="sub">unclear</span>' : '<span class="t-warn">differs</span>'}</td>`; }).join("");
@@ -957,6 +964,12 @@
     if (t.dataset.act === "ctlclear") { D.controlCalls = {}; S.msg = ""; render(); return; }
     if (t.dataset.tab) { S.tab = t.dataset.tab; S.msg = ""; if (S.tab === "control" && !S.control) { render(); await loadControl(); } render(); return; }
     if (t.dataset.dl) { download(t.dataset.dl); return; }
+    if (t.dataset.emove !== undefined) {   // swap with the nearest enzyme lane on that side, stepping over ladder and uncut lanes
+      const i = Number(t.dataset.emove), d = Number(t.dataset.dir); let j = i + d;
+      while (j >= 0 && j < D.lanes.length && D.lanes[j].sp) j += d;
+      if (j >= 0 && j < D.lanes.length) { const x = D.lanes[i]; D.lanes[i] = D.lanes[j]; D.lanes[j] = x; S.msg = "Lane order changed. Save to keep it."; render(); }
+      return;
+    }
     if (t.dataset.move !== undefined) { const i = Number(t.dataset.move), j = i + Number(t.dataset.dir); if (j >= 0 && j < D.lanes.length) { const x = D.lanes[i]; D.lanes[i] = D.lanes[j]; D.lanes[j] = x; render(); } return; }
     if (t.dataset.drop !== undefined) { const L = D.lanes[Number(t.dataset.drop)]; if (L && L.sp) D.lanes.splice(Number(t.dataset.drop), 1); else if (L) toggleEnzyme(L.id, false); render(); return; }
   });

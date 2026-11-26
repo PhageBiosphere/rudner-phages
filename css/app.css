@@ -128,3 +128,4 @@ table.an.main td.sel input,table.an.main th.sel input{display:inline;margin:0}
 table.fig tr.filters select{min-width:54px;padding:2px 2px;font-size:11.5px}table.fig tr.filters input{min-width:44px}
 table.fig td.warn{color:var(--warn)}table.fig tr[data-go]:hover{background:#f5f8ff}
 .savebar label.check{margin-right:14px}
+table.results thead th .mv{display:inline-flex;align-items:center;gap:4px}table.results thead th .mv .mini{padding:0 4px;font-size:10px;line-height:16px}
