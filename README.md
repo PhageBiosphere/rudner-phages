@@ -32,6 +32,14 @@ Genomes belong in the Rudner Lab database and are added through the sequencing t
 
 **Figure 4** on the Analysis page searches every annotated genome (the lab's annotations and the PhagesDB gene lists) for genes of known DNA modification pathways and groups those within 10 kb of each other into islands. The list of marker enzymes is `MOD_MARKERS` in `js/app.js`, with its sources. Each island is set beside the digest call for the same phage. The phage page's summary names the islands of that phage.
 
+## TIFF and PDF gel images
+
+Browsers cannot draw TIFF. A TIFF chosen for upload is decoded in the browser (`js/vendor/UTIF.js`, MIT, with `js/vendor/pako_inflate.min.js`, MIT and Zlib, for compressed files; both are loaded only when needed) and stored as a JPEG like any other upload. A 16-bit greyscale TIFF is stretched between its darkest and brightest 0.05% of pixels, because a gel usually uses a small part of that range.
+
+A phage record's own image is a web address, usually on PhagesDB, and some are TIFF or PDF. Those are read, converted and shown from memory each time; nothing is stored. The site first reads the address directly. If the other site does not allow that, it asks the edge function `fetch-phage-digest-image` (source in `supabase/functions/`), which only fetches PhagesDB digest pictures recorded on a phage. **That function is not deployed yet**; until it is, an image that cannot be read directly shows a note with a link to the original.
+
+The Phages tab starts sorted by Rudner Lab ID, newest first.
+
 ## Long tables
 
 The Phages and Analysis tables list every row in one box that scrolls, with the headings fixed; "Rows shown" sets how tall the box is (10, 20, 40 rows, or as tall as the window). There are no pages. The Phages tab remembers its filters, sort order and box height in the browser (`rudner.phages`), and returns to where it was scrolled when you come back from a phage. "Check next digest" and "Checked: save and next" follow that tab's current order and filters.

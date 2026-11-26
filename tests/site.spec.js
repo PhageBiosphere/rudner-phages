@@ -103,7 +103,7 @@ test.describe("Digest page", () => {
     await page.waitForSelector(".savebar");
     await expect(page.locator("h2 .prog")).toContainText("1 of 11 digests checked");
     await page.click('[data-act="savenext"]');
-    await expect(page).toHaveURL(/#\/phage\/p02\/digest\/xp02$/);
+    await expect(page).toHaveURL(/#\/phage\/p10\/digest\/xp10$/);   // the list starts with the newest lab ID: after p01 comes p00 (already checked), then round to p10
     await expect(page.locator("h2 .prog")).toContainText("2 of 11 digests checked");
     expect(await db(page, `D.restriction_digest_experiments.find((e) => e.restriction_digest_experiment_id === "xp01").results_checked`)).toBe(true);
   });
@@ -389,9 +389,9 @@ test.describe("Scrolling tables", () => {
     expect(await page.evaluate(() => document.querySelector(".listbox").scrollTop)).toBe(40);
     // the filters and sort order are also remembered in the browser for the next visit
     await page.selectOption('select[data-lf="digest"]', "tocheck");
-    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("rudner.phages")));
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("rudner.phages2")));
     expect(saved.filters.digest).toBe("tocheck");
-    expect(saved.sort).toEqual({ k: "name", dir: -1 });
+    expect(saved.sort).toEqual({ k: "name", dir: 1 });
     expect(saved.rows).toBe("10");
     await page.evaluate(() => localStorage.clear());
   });
@@ -506,7 +506,7 @@ test.describe("Genome upload and checking order", () => {
   test("Checked: save and next follows the order and filters of the Phages tab", async ({ page }) => {
     await open(page, "#/");
     await page.selectOption('select[data-lf="digest"]', "tocheck");
-    await page.locator("th[data-sort]").first().click();   // the list starts sorted by name; one click reverses it
+    // the list starts with the newest lab ID first
     const ids = await page.evaluate(() => [...document.querySelectorAll("table.list tbody tr")].map((r) => r.dataset.go.split("/").pop()));
     expect(ids.length).toBe(10);
     expect(ids).not.toEqual(ids.slice().sort());            // not the order of the catalogue
@@ -568,3 +568,70 @@ test.describe("Phage page title", () => {
     await expect(page.locator("h2 a.pdb")).toHaveCount(0);
   });
 });
+
+// A made-up PhagesDB address that answers with one of the fixture files, readable from another site
+const PDB = "https://phagesdb.org/media/digestPics/";
+async function serve(page, name, fixture) {
+  await page.route(PDB + name, (r) => (fixture ? r.fulfill({ status: 200, contentType: "application/octet-stream", headers: { "access-control-allow-origin": "*" }, body: require("fs").readFileSync(path.join(__dirname, "fixtures", fixture)) }) : r.abort()));
+}
+
+test.describe("Default order and TIFF images", () => {
+  test("the Phages tab starts with the most recent Rudner Lab ID", async ({ page }) => {
+    await open(page, "#/");
+    const ids = await cells(page.locator("table.list tbody tr td:nth-child(2)"));
+    expect(ids.length).toBe(12);
+    expect(ids).toEqual(ids.slice().sort().reverse());
+    await expect(page.locator("th[data-sort]").nth(1).locator(".arrow")).toHaveText("▼");
+  });
+
+  for (const name of ["gel16.tif", "gel16-deflate.tif", "gel8.tif"]) {
+    test(`a TIFF gel (${name}) is converted and stored as a JPEG`, async ({ page }) => {
+      await open(page, "#/phage/p11");
+      await page.waitForSelector(".phead");
+      await page.setInputFiles("[data-replicate]", path.join(__dirname, "fixtures", name));
+      await expect(page.locator(".msg").first()).toContainText("TIFF was converted");
+      const stored = await page.evaluate(() => [...window.__FILES__.keys()].filter((k) => k.startsWith("digest-images/")));
+      expect(stored.length).toBe(1);
+      expect(stored[0]).toMatch(/\.jpg$/);
+    });
+  }
+
+  test("a 16-bit TIFF that uses little of its range is stretched so the bands show", async ({ page }) => {
+    await serve(page, "A_Digest.tif", "gel16.tif");
+    await open(page, "#/");
+    const r = await page.evaluate(async () => {
+      const buf = await (await fetch("https://phagesdb.org/media/digestPics/A_Digest.tif")).arrayBuffer();
+      await new Promise((res, rej) => { const a = document.createElement("script"); a.src = "js/vendor/pako_inflate.min.js"; a.onload = () => { const b = document.createElement("script"); b.src = "js/vendor/UTIF.js"; b.onload = res; b.onerror = rej; document.head.appendChild(b); }; a.onerror = rej; document.head.appendChild(a); });
+      const ifd = window.UTIF.decode(buf)[0]; window.UTIF.decodeImage(buf, ifd);
+      const plain = window.UTIF.toRGBA8(ifd); let pmax = 0; for (let i = 0; i < plain.length; i += 4) pmax = Math.max(pmax, plain[i]);
+      return { w: ifd.width, h: ifd.height, bits: ifd.t258[0], plainMax: pmax };
+    });
+    expect(r).toMatchObject({ w: 320, h: 240, bits: 16 });
+    expect(r.plainMax).toBeLessThan(20);          // without stretching, this gel would look black
+  });
+
+  test("a phage record's TIFF image is converted and shown on the phage and digest pages", async ({ page }) => {
+    await serve(page, "A_Digest.tif", "gel16.tif"); await serve(page, "B_Digest.pdf", "gel-two-pages.pdf"); await serve(page, "Missing_Digest.tif", null);
+    await open(page, "#/");
+    await page.addInitScript((base) => { const c = window.__DB__.phage_catalog_public; c[6].restriction_digest_image_url = base + "A_Digest.tif"; c[5].restriction_digest_image_url = base + "Missing_Digest.tif"; c[4].restriction_digest_image_url = base + "B_Digest.pdf"; }, PDB);
+    await page.reload();
+    await page.waitForSelector("table.list tbody tr");
+    const go = (h) => page.evaluate((x) => { location.hash = x; }, h);
+    await go("#/phage/p06");
+    const img = page.locator(".imgbox img").first();
+    await expect(img).toHaveAttribute("src", /^blob:/);
+    const px = await img.evaluate(async (el) => { await el.decode(); const c = document.createElement("canvas"); c.width = el.naturalWidth; c.height = el.naturalHeight; const g = c.getContext("2d"); g.drawImage(el, 0, 0); const d = g.getImageData(0, 0, c.width, c.height).data; let max = 0, sum = 0; for (let i = 0; i < d.length; i += 4) { max = Math.max(max, d[i]); sum += d[i]; } return { w: c.width, h: c.height, max, mean: sum / (d.length / 4) }; });
+    expect(px).toMatchObject({ w: 320, h: 240 });
+    expect(px.max).toBeGreaterThan(200);          // bands are bright
+    expect(px.mean).toBeLessThan(90);             // the background stays dark
+    await go("#/phage/p06/digest/xp06");
+    await expect(page.locator(".zoomwrap img.big")).toHaveAttribute("src", /^blob:/);
+    await expect(page.locator("#gels")).toContainText("Open the original TIFF");
+    await go("#/phage/p04");                         // a PDF address is converted the same way
+    await expect(page.locator(".imgbox img").first()).toHaveAttribute("src", /^blob:/);
+    await go("#/phage/p05");                         // one that cannot be fetched says so and links to the original
+    await expect(page.locator(".imgbox .note.warn")).toContainText("can't be shown here");
+    await expect(page.locator(`.imgbox .note.warn a[href="${PDB}Missing_Digest.tif"]`)).toHaveCount(1);
+  });
+});
+

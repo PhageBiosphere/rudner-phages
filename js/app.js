@@ -19,8 +19,8 @@
     phage: null, digests: [], results: [],
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
-    D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: true, y: 160 },
-    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "", q: "" }, rows: "15", scroll: { list: 0, an: 0 }, gsrc: null, afiles: null,
+    ext: new Map(), D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: true, y: 160 },
+    sort: { k: "lab", dir: -1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "", q: "" }, rows: "15", scroll: { list: 0, an: 0 }, gsrc: null, afiles: null,
     control: null,         // {seq, name}
     an: { loaded: false, raw: null, by: new Map(), checked: new Map(), queued: new Set(), sel: new Set(), qask: false, shownIds: [], show: "all", enz: "", q: "", min: "0", seq: "", host: "", chk: "", follow: false,
       sort: { k: "name", dir: 1 }, size: "20", fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, f4: { sort: { k: "ngenes", dir: -1 }, f: {}, size: "15" }, genes: [], isl: new Map(), msg: "", busy: false }   // the analysis page
@@ -43,7 +43,7 @@
   // The Phages tab remembers its filters, sort order and box height between visits.
   const ROWS_SHOWN = [["10", "10"], ["15", "15"], ["20", "20"], ["40", "40"], ["fit", "fit the window"]];
   try {
-    const o = JSON.parse(localStorage.getItem("rudner.phages") || "null");
+    const o = JSON.parse(localStorage.getItem("rudner.phages2") || "null");
     if (o && typeof o === "object") {
       if (o.filters && typeof o.filters === "object") for (const k in S.filters) if (typeof o.filters[k] === "string") S.filters[k] = o.filters[k];
       if (okSort(o.sort)) S.sort = { k: o.sort.k, dir: o.sort.dir };
@@ -353,11 +353,95 @@
     if (!blob) throw new Error("The PDF page could not be converted to an image.");
     return { blob, w: c.width, h: c.height, pages: doc.numPages };
   }
-  const pdfNote = (r) => (r.pages ? (r.pages > 1 ? ` Page 1 of the PDF's ${r.pages} pages was used.` : " The PDF page was turned into an image.") : "");
+  // A TIFF gel (gel imagers often save 16-bit TIFF): browsers cannot draw TIFF, so it is decoded here in the browser.
+  // The TIFF reader (UTIF.js, with pako for compressed files) is only loaded when a TIFF turns up.
+  const isTiff = (file) => /\.tiff?$/i.test(file.name || "") || /tiff/i.test(file.type || "");
+  let tiffLib = null;
+  function loadTiffLib() {
+    if (!tiffLib) tiffLib = new Promise((resolve, reject) => {
+      const add = (src, next) => { const s = document.createElement("script"); s.src = src; s.onload = next; s.onerror = () => { tiffLib = null; reject(new Error("The TIFF reader could not be loaded.")); }; document.head.appendChild(s); };
+      add("js/vendor/pako_inflate.min.js", () => add("js/vendor/UTIF.js", () => resolve(window.UTIF)));
+    });
+    return tiffLib;
+  }
+  async function tiffToCanvas(buf) {
+    const U = await loadTiffLib();
+    let ifd, pages = 0;
+    try {
+      const all = U.decode(buf).filter((d) => d.t256 && d.t257);
+      pages = all.length;
+      ifd = all.sort((x, y) => y.t256[0] * y.t257[0] - x.t256[0] * x.t257[0])[0];   // the largest image; some files also hold a small preview
+      U.decodeImage(buf, ifd);
+    } catch (err) { ifd = null; }
+    if (!ifd || !ifd.data || !ifd.width || !ifd.height) throw new Error("That TIFF could not be read. Export the gel as JPEG or PNG and upload that.");
+    const w = ifd.width, h = ifd.height, n = w * h, bps = ifd.t258 ? ifd.t258[0] : 1, spp = ifd.t277 ? ifd.t277[0] : 1, intp = ifd.t262 ? ifd.t262[0] : 1;
+    let rgba;
+    if (bps === 16 && spp === 1 && intp <= 1 && ifd.data.length >= n * 2) {
+      // 16-bit greyscale: a gel often uses a small part of the range, so stretch it between its darkest and brightest 0.05% of pixels
+      const d = ifd.data, hist = new Uint32Array(65536);
+      for (let i = 0; i < n; i++) hist[d[2 * i] | (d[2 * i + 1] << 8)]++;
+      const cut = Math.max(1, Math.round(n * 0.0005)); let lo = 0, hi = 65535, acc = 0;
+      for (let v = 0; v < 65536; v++) { acc += hist[v]; if (acc >= cut) { lo = v; break; } }
+      acc = 0; for (let v = 65535; v >= 0; v--) { acc += hist[v]; if (acc >= cut) { hi = v; break; } }
+      if (hi <= lo) hi = lo + 1;
+      rgba = new Uint8ClampedArray(n * 4);
+      for (let i = 0; i < n; i++) { let g = ((d[2 * i] | (d[2 * i + 1] << 8)) - lo) * 255 / (hi - lo); if (intp === 0) g = 255 - g; const o = i * 4; rgba[o] = rgba[o + 1] = rgba[o + 2] = g; rgba[o + 3] = 255; }
+    } else rgba = new Uint8ClampedArray(U.toRGBA8(ifd).buffer);
+    const c = document.createElement("canvas"); c.width = w; c.height = h;
+    c.getContext("2d").putImageData(new ImageData(rgba, w, h), 0, 0);
+    return { canvas: c, pages };
+  }
+  // A canvas as a JPEG whose longer side is at most `side` pixels, on white
+  function canvasToJpeg(src, side) {
+    const k = Math.min(1, side / Math.max(src.width, src.height)), c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(src.width * k)); c.height = Math.max(1, Math.round(src.height * k));
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(src, 0, 0, c.width, c.height);
+    return new Promise((resolve, reject) => c.toBlob((b) => (b ? resolve({ blob: b, w: c.width, h: c.height }) : reject(new Error("The image could not be converted."))), "image/jpeg", CFG.IMAGE_QUALITY));
+  }
+  async function tiffToImage(file) {
+    const t = await tiffToCanvas(await file.arrayBuffer());
+    return Object.assign(await canvasToJpeg(t.canvas, CFG.IMAGE_MAX_SIDE), { tiff: true, tpages: t.pages });
+  }
+  // Images held as a web address (usually the phage record's PhagesDB image) that a browser cannot draw: TIFF and PDF.
+  // They are read once, converted here, and shown from memory; nothing is stored. S.ext: address -> { src } | { error } | { loading }
+  const needsConvert = (url) => /\.(tiff?|pdf)(\?|#|$)/i.test(url || "");
+  async function remoteBytes(url) {
+    try { const r = await fetch(url); if (r.ok) return await r.arrayBuffer(); } catch (err) { /* the other site does not allow reading it directly: ask the lab's server for it */ }
+    if (S.phage && url === S.phage.restriction_digest_image_url) {
+      const px = await sb.functions.invoke("fetch-phage-digest-image", { body: { phage_id: S.phage.phage_id } });
+      if (!px.error && px.data && typeof px.data.arrayBuffer === "function") return await px.data.arrayBuffer();
+      throw new Error((px.data && px.data.error) || "PhagesDB does not let this site read the file, and the lab server's helper for fetching it did not answer");
+    }
+    throw new Error("the site that holds it does not allow it to be read from here");
+  }
+  async function convertRemote(url) {
+    S.ext.set(url, { loading: true });
+    try {
+      const buf = await remoteBytes(url);
+      const r = /\.pdf(\?|#|$)/i.test(url) ? await pdfToImage({ arrayBuffer: async () => buf }) : await canvasToJpeg((await tiffToCanvas(buf)).canvas, 2400);
+      S.ext.set(url, { src: URL.createObjectURL(r.blob) });
+    } catch (err) { S.ext.set(url, { error: err.message || String(err) }); }
+    render();
+  }
+  // What to put in an <img> for an address: the address itself, or the converted copy once it is ready
+  function shownSrc(url) {
+    if (!needsConvert(url)) return { src: url || "" };
+    const e = S.ext.get(url);
+    if (!e) { convertRemote(url); return { wait: true }; }
+    return e.loading ? { wait: true } : e;
+  }
+  const kindOf = (url) => (/\.pdf(\?|#|$)/i.test(url) ? "PDF" : "TIFF");
+  // The picture, a "converting" note, or why it can't be shown (always with a link to the original)
+  const picture = (url, alt, cls, style) => {
+    const s = shownSrc(url);
+    if (s.src) return `<img${cls ? ` class="${cls}"` : ""} src="${esc(s.src)}" alt="${esc(alt)}"${style || ""}>`;
+    return s.wait ? `<div class="empty">Converting the ${kindOf(url)} image so it can be shown…</div>` : `<div class="note warn">This ${kindOf(url)} image can't be shown here (${esc(s.error)}). <a href="${esc(url)}" target="_blank" rel="noopener">Open or download the original</a>, or upload the gel on a digest page.</div>`;
+  };
+  const pdfNote = (r) => (r.pages ? (r.pages > 1 ? ` Page 1 of the PDF's ${r.pages} pages was used.` : " The PDF page was turned into an image.") : r.tiff ? (r.tpages > 1 ? ` The largest of the TIFF's ${r.tpages} images was converted to a JPEG.` : " The TIFF was converted to a JPEG image.") : "");
   function resizeImage(file) {
     if (isPdf(file)) return pdfToImage(file);
+    if (isTiff(file)) return tiffToImage(file);
     return new Promise((resolve, reject) => {
-      if (/\.tiff?$/i.test(file.name) || /tiff/i.test(file.type)) return reject(new Error("Browsers can't read TIFF files. Export the gel as JPEG or PNG and upload that."));
       const url = URL.createObjectURL(file), img = new Image();
       img.onload = () => {
         const k = Math.min(1, CFG.IMAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
@@ -495,7 +579,7 @@
   }
   function viewList() {
     const rows = listRows(), F = S.filters;
-    try { localStorage.setItem("rudner.phages", JSON.stringify({ filters: S.filters, sort: S.sort, rows: S.rows })); } catch (err) { /* not remembered */ }
+    try { localStorage.setItem("rudner.phages2", JSON.stringify({ filters: S.filters, sort: S.sort, rows: S.rows })); } catch (err) { /* not remembered */ }
     const shown = rows;
     const todo = rows.reduce((n, p) => n + (S.digestIndex.get(p.phage_id) || []).filter((x) => !x.results_checked).length, 0);
     const th = (k, label) => `<th data-sort="${k}" title="Sort by this column">${label} <span class="arrow">${S.sort.k === k ? (S.sort.dir > 0 ? "▲" : "▼") : ""}</span></th>`;
@@ -1086,7 +1170,7 @@
     };
     return cards.map((c, i) => `<div class="imgbox"><div class="row"><b>Digest image ${i + 1}</b> <span class="sub">${esc(c.title)}</span></div>
         ${c.exps.length ? `<div class="tablescroll"><table class="list dres"><thead><tr><th></th><th>Date</th><th>Lanes</th><th>Plan</th><th>Lab gel</th><th>Compared</th><th>Blocked</th><th>Checked</th></tr></thead><tbody>${c.exps.map(line).join("")}</tbody></table></div>` : c.canAdd ? `<div class="row res"><a class="btn primary" href="#/phage/${p.phage_id}/digest/new">Add digest result</a><span class="sub">No digest results recorded for this image yet.</span></div>` : ""}
-        ${c.img ? `<a href="${esc(c.img)}" target="_blank" rel="noopener"><img src="${esc(c.img)}" alt="Restriction digest"></a>` : '<div class="empty">No digest image yet. Add one with the button above, or record a result without an image.</div>'}</div>`).join("");
+        ${c.img ? (shownSrc(c.img).src ? `<a href="${esc(c.img)}" target="_blank" rel="noopener">${picture(c.img, "Restriction digest")}</a>` : picture(c.img, "Restriction digest")) : '<div class="empty">No digest image yet. Add one with the button above, or record a result without an image.</div>'}</div>`).join("");
   }
   // A replicate starts as a digest that holds only its gel image; the enzymes and results are added from its card.
   async function addReplicateImage(file) {
@@ -1122,7 +1206,7 @@
     return `<p><a href="#/">← All phages</a></p>
       <div class="card"><div class="row phead"><h2>${pdb ? `<a class="pdb" href="${esc(pdb)}" target="_blank" rel="noopener" title="Open this phage's page on PhagesDB in a new tab (the page exists only if the phage is listed there)">${esc(p.phage_name)}<span class="ext">↗</span></a>` : esc(p.phage_name)} <span class="sub">ID ${esc(labId(p))}</span></h2>
         <span class="sub">${esc(hostOf(p))}${p.phagesdb_cluster ? " · Cluster " + esc(p.phagesdb_subcluster || p.phagesdb_cluster) : ""}${p.genome_length_bp ? " · " + fmt(p.genome_length_bp) + " bp" : " · no genome sequence yet"}</span></div>
-      <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*,application/pdf,.pdf" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>
+      <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*,application/pdf,.pdf,.tif,.tiff" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>
       ${S.gsrc ? `<p class="sub gsrc">Genome sequence: <span class="chip ${S.gsrc[0]}" title="${esc(S.gsrc[2])}">${esc(S.gsrc[1])}</span></p>` : ""}
       ${phageSummary()}
       ${imageCards()}
@@ -1170,8 +1254,8 @@
   function imageBox(kind, title, path, legacy) {
     const own = publicUrl(path), url = own || legacy || "";
     const from = !own && url ? `<p class="tiny">Showing the image from ${srcName(url)}. Upload one only if this digest has its own gel.</p>` : "";
-    return `<div class="imgbox"><div class="row"><b>${title}</b><label class="btn">${url ? "Replace image" : "Upload image"}<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf" data-upload="${kind}" hidden></label></div>
-      ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${title}"></a>${from}` : '<div class="empty">No image yet. JPEG or PNG; it is resized before upload.</div>'}</div>`;
+    return `<div class="imgbox"><div class="row"><b>${title}</b><label class="btn">${url ? "Replace image" : "Upload image"}<input type="file" accept="image/jpeg,image/png,image/webp,image/tiff,application/pdf,.pdf,.tif,.tiff" data-upload="${kind}" hidden></label></div>
+      ${url ? `${shownSrc(url).src ? `<a href="${esc(url)}" target="_blank" rel="noopener">${picture(url, title)}</a>` : picture(url, title)}${from}` : '<div class="empty">No image yet. JPEG, PNG, TIFF or PDF; it is resized before upload.</div>'}</div>`;
   }
 
   // Where the enzyme cuts, written like G^AATTC (the catalogue stores it with ^ or /).
@@ -1227,9 +1311,9 @@
       ${above || ""}
       <div class="two gels" id="gels">
         ${S.guide.on ? `<div class="guide" id="guide" style="top:${S.guide.y}px" title="Drag up or down to compare band positions"><span>drag</span></div>` : ""}
-        <div><b>${k.title}</b>${from} <label class="btn mini" title="JPEG, PNG or PDF. A PDF's first page is turned into an image.">${k.ownImg ? "Replace image" : k.ctl ? "Add a control digest image" : "Add a lab digest image"}<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf" data-upload="${k.ctl ? "control" : "gel"}" hidden></label>${k.img ? ` <span class="zoomctl"><button class="mini" data-zoom="-1"${S.zoom.k > 1 ? "" : " disabled"} title="Zoom out">−</button><span class="sub">${Math.round(S.zoom.k * 100)}%</span><button class="mini" data-zoom="1"${S.zoom.k < 5 ? "" : " disabled"} title="Zoom in; then drag the image to move it">+</button><button class="mini" data-zoom="0"${S.zoom.k > 1 ? "" : " disabled"}>reset</button></span>
-          <div class="zoomwrap${S.zoom.k > 1 ? " zoomed" : ""}"><img class="big" src="${esc(k.img)}" alt="${k.title}" draggable="false" style="transform:translate(${S.zoom.x}px,${S.zoom.y}px) scale(${S.zoom.k})"></div>` : `<div class="empty">${empty}</div>`}
-          ${k.img ? `<p class="tiny"><a href="${esc(k.img)}" target="_blank" rel="noopener">Open the image</a>${!k.ctl && D.gelOriginal ? ` · <a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}${k.ctl && D.controlOriginal ? ` · <a href="${esc(D.controlOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}</p>` : ""}</div>
+        <div><b>${k.title}</b>${from} <label class="btn mini" title="JPEG, PNG, TIFF or PDF. A TIFF, or a PDF's first page, is turned into an image.">${k.ownImg ? "Replace image" : k.ctl ? "Add a control digest image" : "Add a lab digest image"}<input type="file" accept="image/jpeg,image/png,image/webp,image/tiff,application/pdf,.pdf,.tif,.tiff" data-upload="${k.ctl ? "control" : "gel"}" hidden></label>${k.img ? ` <span class="zoomctl"><button class="mini" data-zoom="-1"${S.zoom.k > 1 ? "" : " disabled"} title="Zoom out">−</button><span class="sub">${Math.round(S.zoom.k * 100)}%</span><button class="mini" data-zoom="1"${S.zoom.k < 5 ? "" : " disabled"} title="Zoom in; then drag the image to move it">+</button><button class="mini" data-zoom="0"${S.zoom.k > 1 ? "" : " disabled"}>reset</button></span>
+          <div class="zoomwrap${S.zoom.k > 1 ? " zoomed" : ""}">${picture(k.img, k.title, "big", ` draggable="false" style="transform:translate(${S.zoom.x}px,${S.zoom.y}px) scale(${S.zoom.k})"`)}</div>` : `<div class="empty">${empty}</div>`}
+          ${k.img ? `<p class="tiny"><a href="${esc(k.img)}" target="_blank" rel="noopener">${needsConvert(k.img) ? `Open the original ${kindOf(k.img)}` : "Open the image"}</a>${!k.ctl && D.gelOriginal ? ` · <a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}${k.ctl && D.controlOriginal ? ` · <a href="${esc(D.controlOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}</p>` : ""}</div>
         <div><b>Virtual digest</b> <span class="sub">${esc(k.dnaName)}, from the DNA sequence, same lane order</span><div id="vgel">${k.seq ? virtualGel(kind) : `<div class="empty">${esc(noSeq)}</div>`}</div></div>
       </div>`;
   }
