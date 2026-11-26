@@ -338,3 +338,33 @@ test.describe("Data quality tab", () => {
     await expect(page.locator('select[data-lf="digest"]')).toHaveValue("tocheck");
   });
 });
+
+test.describe("Analysis paging", () => {
+  test("Next under the figures keeps the phage table in view instead of jumping to Figure 1", async ({ page }) => {
+    await page.setViewportSize({ width: 1200, height: 600 });
+    await open(page, "#/analysis");
+    await page.waitForSelector("table.main");
+    // five rows a page, so the made-up phages fill more than one page
+    await page.evaluate(() => { const s = document.querySelector('select[data-an="size"]'); s.options[0].value = "5"; s.value = "5"; s.dispatchEvent(new Event("change", { bubbles: true })); });
+    await expect(page.locator("table.main tbody tr")).toHaveCount(5);
+    const first = await page.locator("table.main tbody tr td.nm").first().innerText();
+    // the pager just under Figure 4
+    const top = page.locator(".pager").first().locator('button[data-anpage="1"]');
+    await top.scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => window.scrollY);
+    expect(before).toBeGreaterThan(200);
+    await top.click();
+    await expect(page.locator("table.main tbody tr td.nm").first()).not.toHaveText(first);
+    expect(Math.abs((await page.evaluate(() => window.scrollY)) - before)).toBeLessThan(5);
+    // the pager under the table: the start of the table comes back into view
+    const bottom = page.locator(".pager").last().locator('button[data-anpage="-1"]');
+    await bottom.scrollIntoViewIfNeeded();
+    await bottom.click();
+    await expect(page.locator("table.main tbody tr td.nm").first()).toHaveText(first);
+    const y = await page.evaluate(() => ({ y: window.scrollY, h: document.getElementById("anphages").getBoundingClientRect().top }));
+    expect(y.y).toBeGreaterThan(200);
+    expect(y.h).toBeGreaterThanOrEqual(0);
+    expect(y.h).toBeLessThan(600);
+  });
+});
+

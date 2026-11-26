@@ -868,7 +868,7 @@
     const allSel = shown.length > 0 && shown.every((r) => A.sel.has(r.p.phage_id));
     const chkCell = (r) => (!r.chk.n ? "" : r.chk.c === r.chk.n ? '<span class="ok" title="Every digest of this phage has been checked against the gel">✓</span>' : r.chk.c ? `<span class="sub">${r.chk.c}/${r.chk.n}</span>` : '<span class="sub" title="Not yet checked against the gel">–</span>');
     return `<div class="card"><h2>Analysis <span class="sub">restriction enzyme results for every phage</span></h2>${figureGroups(M)}${figureGcAt(M)}${figurePatterns(M)}${figureIslands(M)}
-      <hr class="sep"><h3 style="margin:0 0 4px">Phages</h3>${bar}${pager}
+      <hr class="sep"><h3 id="anphages" style="margin:0 0 4px">Phages</h3>${bar}${pager}
       <div class="tablescroll tall"><table class="list an main"><thead><tr class="r1"><th class="sel" rowspan="2" title="Select every phage on this page"><input type="checkbox" data-aselall${allSel ? " checked" : ""}></th>${fixed.map((c) => sortTh("main", A, c[0], c[1], c[2], "", ' rowspan="2"')).join("")}${groupHead}</tr>
       <tr class="r2">${used.map((z, i) => sortTh("main", A, z.restriction_enzyme_id, esc(z.enzyme_name), "c" + (!i || used[i - 1].grp !== z.grp ? " g0" : ""), z.recognition_sequence || "")).join("")}</tr></thead><tbody>
       ${shown.map((r) => `<tr data-go="#/phage/${r.p.phage_id}"><td class="sel" data-nogo><input type="checkbox" data-asel="${r.p.phage_id}"${A.sel.has(r.p.phage_id) ? " checked" : ""}></td><td class="nm"><b>${esc(r.name)}</b>${A.queued.has(r.p.phage_id) ? ' <span class="chip" title="Already waiting in the sequencing queue">queued</span>' : ""}</td><td>${esc(labId(r.p))}</td><td>${esc(r.host)}</td><td>${esc(r.cluster)}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td class="c" title="${esc(r.blk.map((z) => z.enzyme_name).join(", "))}">${r.blk.length ? `<b>${r.blk.length}</b> <span class="sub">of ${r.tested}</span>` : `<span class="sub">0 of ${r.tested}</span>`}</td><td class="c">${chkCell(r)}</td>${used.map((z, i) => analysisCell(r.m.get(z.restriction_enzyme_id), !i || used[i - 1].grp !== z.grp)).join("")}</tr>`).join("") || `<tr><td colspan="${used.length + 8}" class="sub">No phage matches these filters.</td></tr>`}
@@ -1318,7 +1318,9 @@
     if (t.dataset.page) { S.page = Math.max(0, S.page + Number(t.dataset.page)); render(); return; }
     if (t.dataset.act === "recompute") { if (!S.an.busy) recomputeVirtual(); return; }
     if (t.dataset.act === "seqcand") { Object.assign(S.an, { show: "blocked", min: "3", seq: "no", sort: { k: "blocked", dir: -1 }, enz: "", q: "", host: "", page: 0 }); render(); return; }
-    if (t.dataset.anpage) { S.an.page = Math.max(0, S.an.page + Number(t.dataset.anpage)); render(); window.scrollTo(0, 0); return; }
+    if (t.dataset.anpage) { S.an.page = Math.max(0, S.an.page + Number(t.dataset.anpage)); render();
+      // Stay with the phage table: the top pager has not moved; after the bottom pager, bring the start of the table back into view (not the top of the page, which is Figure 1)
+      const h = document.getElementById("anphages"); if (h && h.getBoundingClientRect().top < 0) h.scrollIntoView(); return; }
     if (t.dataset.act === "clearfilters") { for (const k in S.filters) S.filters[k] = ""; S.page = 0; render(); return; }
     if (t.id === "signout") { await sb.auth.signOut(); S.user = null; S.role = null; S.catalog = []; S.phage = null; S.D = null; render(); return; }
     if (t.dataset.go) { location.hash = t.dataset.go; return; }
