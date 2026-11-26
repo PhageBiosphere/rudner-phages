@@ -368,3 +368,28 @@ test.describe("Analysis paging", () => {
   });
 });
 
+test.describe("Digest page: enzyme list", () => {
+  test("the enzyme tick-boxes stay in alphabetical order, an enzyme can be removed from the results, and the guide line starts on", async ({ page }) => {
+    await open(page, "#/phage/p00");
+    await page.locator('a.btn, button', { hasText: "Edit" }).first().click();
+    await page.waitForSelector("table.results");
+    await expect(page.locator("input[data-guide]")).toBeChecked();
+    await expect(page.locator("#guide")).toBeVisible();
+    const names = () => page.evaluate(() => [...document.querySelectorAll(".picks label.pick input[data-pick]")].map((i) => i.closest("label").querySelector("b").textContent));
+    const heads = () => page.evaluate(() => [...document.querySelectorAll("table.results thead th .mv")].map((s) => s.childNodes[1].textContent.trim()));
+    await page.evaluate(() => { for (const d of document.querySelectorAll("details")) d.open = true; });
+    const before = await names();
+    expect(before).toEqual(before.slice().sort((a, b) => a.localeCompare(b)));
+    const h0 = await heads();
+    expect(h0.length).toBeGreaterThan(2);
+    // remove the second enzyme with its ✕
+    await page.locator("table.results thead th").nth(2).locator("button.rm").click();
+    const h1 = await heads();
+    expect(h1).toEqual(h0.filter((n) => n !== h0[1]));
+    await page.evaluate(() => { for (const d of document.querySelectorAll("details")) d.open = true; });
+    expect(await names()).toEqual(before);   // the unticked enzyme has not moved
+    const box = page.locator(".picks label.pick", { has: page.locator("b", { hasText: new RegExp("^" + h0[1] + "$") }) }).locator("input");
+    await expect(box).not.toBeChecked();
+  });
+});
+

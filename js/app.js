@@ -19,7 +19,7 @@
     phage: null, digests: [], results: [],
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
-    D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: false, y: 160 },
+    D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: true, y: 160 },
     sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "" }, pageSize: 25, page: 0,
     control: null,         // {seq, name}
     an: { loaded: false, raw: null, by: new Map(), checked: new Map(), queued: new Set(), sel: new Set(), qask: false, shownIds: [], show: "all", enz: "", q: "", min: "0", seq: "", host: "", chk: "", follow: false,
@@ -1103,7 +1103,7 @@
   function enzymePicker() {
     const D = S.D, g = S.genome && S.genome.seq, last = D.lanes.length - 1;
     const box = (attr, on, label, title, lock) => `<label class="pick${on ? " on" : ""}" title="${esc(title || "")}"><input type="checkbox" ${attr}${on ? " checked" : ""}${lock ? " disabled" : ""}><span>${label}</span></label>`;
-    const list = S.enzymes.map((z) => ({ z, on: D.lanes.some((L) => L.id === z.restriction_enzyme_id) })).sort((a, b) => b.on - a.on || a.z.enzyme_name.localeCompare(b.z.enzyme_name));
+    const list = S.enzymes.map((z) => ({ z, on: D.lanes.some((L) => L.id === z.restriction_enzyme_id) })).sort((a, b) => a.z.enzyme_name.localeCompare(b.z.enzyme_name));   // always by name, so ticking or unticking an enzyme never moves it
     const enz = list.map(({ z, on }) => {
       const c = g ? DG.digest(S.genome.seq, z.recognition_sequence, S.genome.circular) : null;
       const lock = D.saved.has(z.restriction_enzyme_id) && S.role !== "owner";
@@ -1123,7 +1123,7 @@
     const D = S.D, k = K(kind), cols = D.lanes.map((L, i) => ({ L, i })).filter((x) => !x.L.sp);
     if (!cols.length) return '<div class="note warn">No enzymes chosen yet. Open <b>Enzymes and lane order</b> above to choose them.</div>';
     const blk = (L) => !k.ctl && isBlocked(L);
-    const head = cols.map(({ L, i }, n) => `<th class="${blk(L) ? "blk" : ""}${i === S.cur ? " cur" : ""}" title="${esc(cutSite(enzyme(L.id)))}"><span class="ln">lane ${i + 1}</span><span class="mv"><button class="mini" data-emove="${i}" data-dir="-1"${n ? "" : " disabled"} title="Move this enzyme one place to the left; its result moves with it">◀</button>${esc(laneName(L))}<button class="mini" data-emove="${i}" data-dir="1"${n < cols.length - 1 ? "" : " disabled"} title="Move this enzyme one place to the right; its result moves with it">▶</button></span></th>`).join("");
+    const head = cols.map(({ L, i }, n) => `<th class="${blk(L) ? "blk" : ""}${i === S.cur ? " cur" : ""}" title="${esc(cutSite(enzyme(L.id)))}"><span class="ln">lane ${i + 1}</span><span class="mv"><button class="mini" data-emove="${i}" data-dir="-1"${n ? "" : " disabled"} title="Move this enzyme one place to the left; its result moves with it">◀</button>${esc(laneName(L))}<button class="mini" data-emove="${i}" data-dir="1"${n < cols.length - 1 ? "" : " disabled"} title="Move this enzyme one place to the right; its result moves with it">▶</button>${D.saved.has(L.id) && S.role !== "owner" ? '<button class="mini rm" disabled title="This enzyme has a saved result; only an owner can remove it">✕</button>' : `<button class="mini rm" data-drop="${i}" title="Remove ${esc(laneName(L))} from this digest. Nothing is deleted until you save.">✕</button>`}</span></th>`).join("");
     const lab = cols.map(({ L, i }) => { const o = k.get(L); return `<td class="${blk(L) ? "blk" : ""}${i === S.cur ? " cur" : ""}"><div class="cb">${CALL_BTN.map((b) => `<button class="call ${o === b[0] ? "on " + b[2] : o ? "" : "unset"}" data-call="${i}" data-val="${b[0]}" title="${b[3]}" aria-label="${b[0]}">${b[1]}</button>`).join("")}</div></td>`; }).join("");
     const virt = cols.map(({ L }) => { const c = k.cuts(L.id), v = k.vcall(L.id); return `<td class="${blk(L) ? "blk" : ""}" title="${c ? (c.sites ? `Fragments: ${c.fragments.slice(0, 8).map(fmt).join(", ")}${c.fragments.length > 8 ? " …" : ""} bp` : "No recognition sites in this DNA, so this lane should stay uncut") : "No sequence yet"}">${!v ? '<span class="sub">—</span>' : v === "Digestion" ? `<span class="t-ok">✓</span> ${c ? `${c.sites} cut${c.sites === 1 ? "" : "s"}` : "digests"}` : `<span class="t-bad">✗</span> ${c ? "0 cuts" : "no digestion"}`}</td>`; }).join("");
     const verdict = cols.map(({ L }) => { const v = k.vcall(L.id), o = k.get(L); return `<td class="${blk(L) ? "blk" : ""}">${!o ? '<span class="t-warn">not set</span>' : !v ? "" : blk(L) ? '<b class="t-bad">blocked</b>' : v === o ? '<span class="t-ok">as predicted</span>' : o === "Partial digestion" ? '<span class="t-warn">partial</span>' : o === "Uninterpretable" ? '<span class="sub">unclear</span>' : '<span class="t-warn">differs</span>'}</td>`; }).join("");
