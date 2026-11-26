@@ -304,3 +304,37 @@ test.describe("Enzyme details", () => {
     await expect(page.locator(".psum")).toContainText("SacII: blocked by cytosine methylation");
   });
 });
+
+test.describe("Data quality tab", () => {
+  test("counts phages with a digest and how many are checked, for all, sequenced and unsequenced phages", async ({ page }) => {
+    await open(page, "#/quality");
+    await expect(page.locator("h2")).toHaveText("Data quality");
+    const want = await db(page, `(() => { const ex = D.restriction_digest_experiments, by = {}; for (const x of ex) (by[x.phage_id] = by[x.phage_id] || []).push(x);
+      const count = (keep) => { const o = { n: 0, checked: 0, todo: 0, none: 0 }; for (const p of D.phage_catalog_public) { if (!keep(p)) continue; o.n++; const d = by[p.phage_id] || []; if (!d.length) o.none++; else if (d.every((x) => x.results_checked)) o.checked++; else o.todo++; } return o; };
+      return [count(() => true), count((p) => !!p.genome_length_bp), count((p) => !p.genome_length_bp)]; })()`);
+    expect(want[0]).toEqual({ n: 12, checked: 1, todo: 10, none: 1 });
+    const rows = page.locator('details[data-sec="q1"] .qrow');
+    await expect(rows).toHaveCount(3);
+    for (let i = 0; i < 3; i++) {
+      const text = (await rows.nth(i).innerText()).replace(/\s+/g, " ");
+      expect(text).toContain(`${want[i].n} phages`);
+      expect(text).toContain(`Checked ${want[i].checked} `);
+      expect(text).toContain(`not yet checked ${want[i].todo} `);
+      expect(text).toContain(`No digest ${want[i].none} `);
+    }
+    expect(want[1].n + want[2].n).toBe(12);
+    await expect(page.locator("header nav a.on")).toHaveText("Data quality");
+    for (const k of ["q2", "q3", "q4", "q5"]) await expect(page.locator(`details[data-sec="${k}"]`)).toBeVisible();
+    const nres = await db(page, "D.restriction_digest_results.filter((r) => r.observed_result).length");
+    await expect(page.locator('details[data-sec="q3"] summary')).toContainText(`${nres} results`);
+    const perEnzyme = await cells(page.locator('details[data-sec="q3"] tbody tr td:nth-child(2)'));
+    expect(perEnzyme.reduce((a, b) => a + Number(b), 0)).toBe(nres);
+  });
+
+  test("a count opens the Phages tab showing those phages", async ({ page }) => {
+    await open(page, "#/quality");
+    await page.locator('details[data-sec="q1"] .qrow').first().locator("a", { hasText: "not yet checked" }).click();
+    await expect(page.locator("table.list tbody tr")).toHaveCount(10);
+    await expect(page.locator('select[data-lf="digest"]')).toHaveValue("tocheck");
+  });
+});

@@ -145,3 +145,20 @@ table.results th.cur,table.results td.cur{box-shadow:inset 0 0 0 2px var(--blue)
 td.acts input,table.list td input[data-zef]{width:100%;min-width:140px;margin:0;padding:3px 6px;font-size:12.5px}
 svg.imap{display:block}table.fig4 td{vertical-align:middle}.lg{white-space:nowrap;margin-right:6px}.lg i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px;vertical-align:-1px}
 table.fig td.ok{color:var(--ok)}table.fig span.warn{color:var(--warn)}table.fig span.ok{color:var(--ok)}
+/* data quality tab */
+.qfig{margin:4px 12px 12px}
+.qrow{display:grid;grid-template-columns:170px 1fr;gap:14px;align-items:start;margin:10px 0}
+.qrow.slim{grid-template-columns:110px 1fr 110px;align-items:center;margin:4px 0}
+.qlab{font-size:13px}
+.qnum{font-size:13px}
+.qbar{display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--mutebg);border:1px solid var(--line)}
+.qbar.plain{background:none;border:0}
+.qbar span{display:block;height:100%}
+.qbar span+span{border-left:2px solid #fff}
+.qtext{display:flex;flex-wrap:wrap;gap:4px 18px;margin:5px 0 0;font-size:13px}
+.qtext a{color:inherit;text-decoration:none;border-bottom:1px dotted var(--sub)}
+.qtext a:hover{color:var(--blue);border-bottom-color:var(--blue)}
+i.key{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:-1px}
+.q-ok{background:#137333}.q-warn{background:#f2a900}.q-bad{background:#c5221f}.q-mute{background:#b6bbc2}.q-blue{background:#1a73e8}
+table.qtab .qbar{min-width:160px}
+@media (max-width:700px){.qrow{grid-template-columns:1fr;gap:4px}}

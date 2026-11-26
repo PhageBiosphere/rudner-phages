@@ -876,6 +876,85 @@
       <p class="tiny">✓ digests · ~ partial digestion · ✗ does not digest · ? undetermined. Enzymes are grouped by their recognition site: only G and C, only A and T, or both. <b>Blocked</b> (a bold ✗ on a coloured cell): the lab gel shows no cut although the genome has sites for the enzyme, which points to DNA modification. Red is confirmed by the genome and a control digest; amber is provisional (no genome sequence, no control digest, or the control was not confirmed). A plain grey ✗ means the genome has no sites, so no cut is expected. Each cell shows the phage's most recent digest with that enzyme. Click a heading to sort and a row to open the phage.</p></div>`;
   }
   // ---------- analysis downloads ----------
+  // ---------- data quality ----------
+  // How complete the digest records are. Everything here is counted from all digests, not only the latest one of each phage.
+  const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : "–");
+  // One bar: parts = [[label, count, colour class, optional link]]; the counts are also written out beside it.
+  function qBar(label, parts, total, unit) {
+    const seg = parts.filter((x) => x[1] > 0).map((x) => `<span class="${x[2]}" style="width:${((x[1] / total) * 100).toFixed(2)}%" title="${esc(x[0])}: ${fmt(x[1])} of ${fmt(total)} (${pct(x[1], total)})"></span>`).join("");
+    const text = parts.map((x) => { const t = `<i class="key ${x[2]}"></i>${esc(x[0])} <b>${fmt(x[1])}</b> <span class="sub">(${pct(x[1], total)})</span>`; return x[3] && x[1] ? `<a href="#/" data-qf="${esc(x[3])}" title="Show these phages on the Phages tab">${t}</a>` : `<span>${t}</span>`; }).join("");
+    return `<div class="qrow"><div class="qlab"><b>${esc(label)}</b><br><span class="sub">${fmt(total)} ${esc(unit)}</span></div><div><div class="qbar">${total ? seg : ""}</div><div class="qtext">${text}</div></div></div>`;
+  }
+  function qualityModel() {
+    const ex = S.an.raw.ex, rs = S.an.raw.rs, phage = new Map(S.catalog.map((p) => [p.phage_id, p]));
+    const exById = new Map(ex.map((x) => [x.restriction_digest_experiment_id, x])), byPhage = new Map(), resBy = new Map();
+    for (const x of ex) { if (!byPhage.has(x.phage_id)) byPhage.set(x.phage_id, []); byPhage.get(x.phage_id).push(x); }
+    for (const r of rs) { if (!r.observed_result || !exById.has(r.restriction_digest_experiment_id)) continue; if (!resBy.has(r.restriction_digest_experiment_id)) resBy.set(r.restriction_digest_experiment_id, []); resBy.get(r.restriction_digest_experiment_id).push(r); }
+    const seqd = (p) => !!(p && p.genome_length_bp);
+    // Figure 1: phages
+    const f1 = [["All phages", () => true, ""], ["Sequenced", seqd, "yes"], ["Not sequenced", (p) => !seqd(p), "no"]].map(([label, keep, g]) => {
+      const o = { label, g, n: 0, checked: 0, todo: 0, none: 0 };
+      for (const p of S.catalog) { if (!keep(p)) continue; o.n += 1; const d = byPhage.get(p.phage_id) || []; if (!d.length) o.none += 1; else if (d.every((x) => x.results_checked)) o.checked += 1; else o.todo += 1; }
+      return o;
+    });
+    // Figure 2: digests
+    const gelOf = new Map(); for (const list of S.digestIndex.values()) for (const x of list) gelOf.set(x.restriction_digest_experiment_id, !!(x.gel_image_path || x.gel_image_url));
+    const d = { n: ex.length, chk: 0, img: 0, imgRec: 0, ctlOk: 0, ctlBad: 0, ctlNone: 0, vAll: 0, vMiss: 0, vNoSeq: 0, empty: 0 };
+    for (const x of ex) {
+      const p = phage.get(x.phage_id), res = resBy.get(x.restriction_digest_experiment_id) || [];
+      if (x.results_checked) d.chk += 1;
+      if (gelOf.get(x.restriction_digest_experiment_id)) d.img += 1; else if (p && p.restriction_digest_image_url) d.imgRec += 1;
+      if (x.positive_control_passed === true) d.ctlOk += 1; else if (x.positive_control_passed === false) d.ctlBad += 1; else if (x.no_control) d.ctlNone += 1;
+      if (!res.length) d.empty += 1; else if (!seqd(p)) d.vNoSeq += 1; else if (res.every((r) => virtOf(r))) d.vAll += 1; else d.vMiss += 1;
+    }
+    // Figure 3: results by enzyme
+    const enz = new Map(), perPhage = new Map(), odd = [];
+    for (const [id, res] of resBy) {
+      const x = exById.get(id), p = phage.get(x.phage_id);
+      for (const r of res) {
+        const z = enzyme(r.restriction_enzyme_id), name = z.enzyme_name || "(enzyme no longer listed)";
+        const e = enz.get(name) || { name, n: 0, "Digestion": 0, "Partial digestion": 0, "No digestion": 0, "Uninterpretable": 0 };
+        e.n += 1; if (r.observed_result in e) e[r.observed_result] += 1; enz.set(name, e);
+        if (!perPhage.has(x.phage_id)) perPhage.set(x.phage_id, new Set()); perPhage.get(x.phage_id).add(r.restriction_enzyme_id);
+        // the gel shows cutting, but the genome has no site for this enzyme
+        if (p && (r.observed_result === "Digestion" || r.observed_result === "Partial digestion") && virtOf(r) === "No digestion") odd.push({ p, x, name, obs: r.observed_result });
+      }
+    }
+    const f3 = [...enz.values()].sort((x, y) => y.n - x.n || x.name.localeCompare(y.name));
+    // Figure 4: how many enzymes each phage has a result for
+    const hist = new Map(); for (const set of perPhage.values()) hist.set(set.size, (hist.get(set.size) || 0) + 1);
+    const f4 = [...hist.entries()].sort((x, y) => x[0] - y[0]);
+    odd.sort((x, y) => (x.p.phage_name || "").localeCompare(y.p.phage_name || "") || x.name.localeCompare(y.name));
+    return { f1, d, f3, f4, odd, nres: [...resBy.values()].reduce((n, r) => n + r.length, 0), tested: perPhage.size };
+  }
+  function viewQuality() {
+    if (!S.an.loaded) return '<div class="card"><h2>Data quality</h2><p class="sub">Reading the results…</p></div>';
+    const M = qualityModel(), d = M.d, all = M.f1[0], withDigest = all.checked + all.todo;
+    const sec = (key, title, sub, body) => `<details class="sec" data-sec="${key}"${S.open[key] === false ? "" : " open"}><summary><b>${title}</b> <span class="sub">${sub}</span></summary><div class="qfig">${body}</div></details>`;
+    const fig1 = M.f1.map((o) => qBar(o.label, [["Checked", o.checked, "q-ok", `${o.g}|checked`], ["Digest recorded, not yet checked", o.todo, "q-warn", `${o.g}|tocheck`], ["No digest", o.none, "q-mute", `${o.g}|no`]], o.n, o.n === 1 ? "phage" : "phages")).join("");
+    const unit = d.n === 1 ? "digest" : "digests";
+    const fig2 = qBar("Results checked", [["Checked", d.chk, "q-ok"], ["Not yet checked", d.n - d.chk, "q-warn"]], d.n, unit)
+      + qBar("Gel image", [["Uploaded with the digest", d.img, "q-ok"], ["Only the phage record's image", d.imgRec, "q-blue"], ["No image", d.n - d.img - d.imgRec, "q-mute"]], d.n, unit)
+      + qBar("Control digest", [["Passed", d.ctlOk, "q-ok"], ["Failed", d.ctlBad, "q-bad"], ["No control", d.ctlNone, "q-mute"], ["Not recorded", d.n - d.ctlOk - d.ctlBad - d.ctlNone, "q-warn"]], d.n, unit)
+      + qBar("Virtual digest", [["From the genome, every enzyme", d.vAll, "q-ok"], ["Missing for a sequenced phage", d.vMiss, "q-warn"], ["Phage not sequenced", d.vNoSeq, "q-mute"], ["No results entered", d.empty, "q-bad"]], d.n, unit);
+    const fig3 = `<div class="tablescroll"><table class="list an qtab"><thead><tr><th>Enzyme</th><th class="c">Results</th><th style="width:45%">Share of results</th><th class="c">Digestion</th><th class="c">Partial</th><th class="c">No digestion</th><th class="c">Unclear</th><th class="c">Unclear %</th></tr></thead><tbody>
+      ${M.f3.map((e) => `<tr><td><b>${esc(e.name)}</b></td><td class="c">${fmt(e.n)}</td><td><div class="qbar">${[["Digestion", "q-ok"], ["Partial digestion", "q-warn"], ["No digestion", "q-bad"], ["Uninterpretable", "q-mute"]].map((k) => (e[k[0]] ? `<span class="${k[1]}" style="width:${((e[k[0]] / e.n) * 100).toFixed(2)}%" title="${k[0]}: ${e[k[0]]} of ${e.n}"></span>` : "")).join("")}</div></td><td class="c">${e["Digestion"]}</td><td class="c">${e["Partial digestion"]}</td><td class="c">${e["No digestion"]}</td><td class="c">${e["Uninterpretable"]}</td><td class="c">${pct(e["Uninterpretable"], e.n)}</td></tr>`).join("") || '<tr><td colspan="8" class="sub">No results have been recorded yet.</td></tr>'}
+      </tbody></table></div><p class="qtext"><span><i class="key q-ok"></i>Digestion</span><span><i class="key q-warn"></i>Partial digestion</span><span><i class="key q-bad"></i>No digestion</span><span><i class="key q-mute"></i>Unclear (could not be read from the gel)</span></p>`;
+    const top = Math.max(1, ...M.f4.map((x) => x[1]));
+    const fig4 = M.f4.map(([k, n]) => `<div class="qrow slim"><div class="qlab">${k} enzyme${k === 1 ? "" : "s"}</div><div><div class="qbar plain"><span class="q-blue" style="width:${((n / top) * 100).toFixed(2)}%"></span></div></div><div class="qnum"><b>${fmt(n)}</b> phage${n === 1 ? "" : "s"}</div></div>`).join("") || '<p class="sub">No results have been recorded yet.</p>';
+    const shown = M.odd.slice(0, 50);
+    const fig5 = M.odd.length ? `<div class="tablescroll"><table class="list an qtab"><thead><tr><th>Phage</th><th>Enzyme</th><th>Lab gel</th><th>Genome</th><th>Digest checked</th></tr></thead><tbody>
+      ${shown.map((o) => `<tr><td><a href="#/phage/${o.p.phage_id}/digest/${o.x.restriction_digest_experiment_id}">${esc(o.p.phage_name || "")}</a></td><td>${esc(o.name)}</td><td>${esc(o.obs)}</td><td>No site</td><td>${o.x.results_checked ? "Yes" : "No"}</td></tr>`).join("")}
+      </tbody></table></div>${M.odd.length > shown.length ? `<p class="sub">The first ${shown.length} of ${fmt(M.odd.length)} are shown.</p>` : ""}` : '<p class="sub">None: no gel shows cutting by an enzyme that has no site in the genome.</p>';
+    return `<div class="card"><h2>Data quality</h2>
+      <p class="sub">How complete the restriction digest records are. <b>${fmt(withDigest)}</b> of ${fmt(all.n)} phages (${pct(withDigest, all.n)}) have a digest; <b>${fmt(all.checked)}</b> ${all.checked === 1 ? "has" : "have"} had every digest checked. In all: ${fmt(d.n)} ${unit} and ${fmt(M.nres)} enzyme results.</p>
+      ${sec("q1", "Figure 1: phages with a restriction digest", "(sequenced, not sequenced and all)", `${fig1}<p class="sub">Checked: every digest of the phage is marked as checked. Sequenced: the phage record has a genome length. Click a count to list those phages.</p>`)}
+      ${sec("q2", "Figure 2: what each digest has", `(${fmt(d.n)} ${unit})`, `${fig2}<p class="sub">“Missing for a sequenced phage” can usually be filled in with <i>Recompute virtual digests</i> on the Analysis tab.</p>`)}
+      ${sec("q3", "Figure 3: results by enzyme", `(${fmt(M.nres)} results)`, `${fig3}<p class="sub">An enzyme with a large share of unclear results may need repeating or a better gel.</p>`)}
+      ${sec("q4", "Figure 4: enzymes tested per phage", `(${fmt(M.tested)} phage${M.tested === 1 ? "" : "s"} with results)`, fig4)}
+      ${sec("q5", "Figure 5: results that disagree with the genome", `(${fmt(M.odd.length)})`, `<p class="sub">The gel shows digestion, but the genome has no site for the enzyme. These are worth a second look: the wrong lane, the wrong phage, or a genome that does not match the sample.</p>${fig5}`)}
+    </div>`;
+  }
   const csvCell = (v) => { const s = String(v == null ? "" : v); return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const saveCsv = (rows, name) => saveBlob(new Blob(["﻿" + rows.map((r) => r.map(csvCell).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }), name);
   // Draws a table as it looks on the page (without its filter row) onto a canvas.
@@ -1165,7 +1244,7 @@
   let route = { name: "list" };
   function render() {
     const ae = document.activeElement, keepKey = ae && ae.dataset && ae.dataset.lf && ae.tagName === "INPUT" ? ae.dataset.lf : null, keep = keepKey ? ae.selectionStart : null;
-    const here = route.name === "analysis" ? "#/analysis" : route.name === "enzymes" ? "#/enzymes" : "#/";
+    const here = route.name === "analysis" ? "#/analysis" : route.name === "quality" ? "#/quality" : route.name === "enzymes" ? "#/enzymes" : "#/";
     for (const a of document.querySelectorAll("header nav a")) a.classList.toggle("on", !!S.role && a.getAttribute("href") === here);
     userBox.innerHTML = S.user ? `${esc(S.name || S.user.email || "")}${S.role ? ` · ${esc(S.role)}` : ""} <button id="signout">Sign out</button>` : "";
     if (!S.user) app.innerHTML = viewSignIn(S.msg);
@@ -1174,6 +1253,7 @@
     else if (route.name === "phage" && S.phage) app.innerHTML = viewPhage();
     else if (route.name === "enzymes") app.innerHTML = viewEnzymes();
     else if (route.name === "analysis") app.innerHTML = viewAnalysis();
+    else if (route.name === "quality") app.innerHTML = viewQuality();
     else app.innerHTML = viewList();
     if (keepKey) { const f = app.querySelector(`input[data-lf="${keepKey}"]`); if (f) { f.focus(); f.setSelectionRange(keep, keep); } }
   }
@@ -1191,6 +1271,7 @@
         if (query) { try { anApply(JSON.parse(decodeURIComponent(escape(atob(decodeURIComponent(new URLSearchParams(query).get("v") || "")))))); } catch (err) { /* an address that can't be read just opens the page */ } }
         S.D = null; route = { name: "analysis" }; S.an.loaded = false; render(); await loadAnalysis(); render(); return;
       }
+      if (h[0] === "quality") { S.D = null; route = { name: "quality" }; S.an.loaded = false; render(); await loadAnalysis(); render(); return; }
       if (h[0] === "phage" && h[1]) {
         if (!S.phage || S.phage.phage_id !== h[1]) await loadPhage(h[1]);
         if (!S.phage) { location.hash = "#/"; return; }
@@ -1221,6 +1302,8 @@
   });
   document.addEventListener("click", async (ev) => {
     if (ev.target.closest("[data-nogo]")) return;   // a tick-box cell inside a clickable row
+    const qf = ev.target.closest("a[data-qf]");   // a count on the Data quality tab: set the Phages tab's filters; the link itself then opens #/
+    if (qf) { const [g, dg] = qf.dataset.qf.split("|"); for (const k in S.filters) S.filters[k] = ""; S.filters.genome = g; S.filters.digest = dg; S.page = 0; return; }
     const t = ev.target.closest("button, a.btn, th[data-sort], th[data-asort], tr[data-go]");
     if (!t) return;
     if (t.dataset.asort) {

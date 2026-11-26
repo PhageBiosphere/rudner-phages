@@ -32,6 +32,18 @@ Editors can upload a phage's own genome FASTA from the digest page; it is kept i
 
 **Figure 4** on the Analysis page searches every annotated genome (the lab's annotations and the PhagesDB gene lists) for genes of known DNA modification pathways and groups those within 10 kb of each other into islands. The list of marker enzymes is `MOD_MARKERS` in `js/app.js`, with its sources. Each island is set beside the digest call for the same phage. The phage page's summary names the islands of that phage.
 
+## Data quality tab
+
+`#/quality` shows how complete the digest records are, counted from all digests:
+
+1. Phages with a digest (all, sequenced, not sequenced): checked, recorded but not yet checked, none. Click a count to list those phages on the Phages tab.
+2. What each digest has: results checked, gel image, control digest, virtual digest.
+3. Results by enzyme, with the share that could not be read from the gel.
+4. How many enzymes each phage has a result for.
+5. Results that disagree with the genome: the gel shows digestion but the genome has no site for the enzyme.
+
+The code is `qualityModel` and `viewQuality` in `js/app.js`.
+
 ## Tests
 
 `tests/` holds browser tests that run against a stand-in database (see `tests/README.md`). GitHub runs them on every push.
