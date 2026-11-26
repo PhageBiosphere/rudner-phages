@@ -38,6 +38,15 @@ test.describe("Phages tab", () => {
     await page.selectOption('select[data-lf="digest"]', "no");
     await expect(page.locator("table.list tbody tr")).toHaveCount(1);
   });
+  test("filters to phages with no digest image", async ({ page }) => {
+    await open(page, "#/");
+    await page.selectOption('select[data-lf="image"]', "yes");
+    await expect(page.locator("table.list tbody tr")).toHaveCount(1);          // only Phage07 has a picture in the stand-in data
+    await expect(page.locator("table.list tbody tr")).toContainText("Phage07");
+    await page.selectOption('select[data-lf="image"]', "no");
+    await expect(page.locator("table.list tbody tr")).toHaveCount(11);
+    await expect(page.locator("table.list tbody tr").first()).toContainText("no image");
+  });
   test("the menu bar highlights the open page", async ({ page }) => {
     await open(page, "#/analysis");
     await expect(page.locator("header nav a.on")).toHaveText("Analysis");

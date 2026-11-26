@@ -20,7 +20,7 @@
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
     D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: false, y: 160 },
-    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", digest: "" }, pageSize: 25, page: 0,
+    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "" }, pageSize: 25, page: 0,
     control: null,         // {seq, name}
     an: { loaded: false, raw: null, by: new Map(), checked: new Map(), queued: new Set(), sel: new Set(), qask: false, shownIds: [], show: "all", enz: "", q: "", min: "0", seq: "", host: "", chk: "", follow: false,
       sort: { k: "name", dir: 1 }, size: "25", page: 0, fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, msg: "", busy: false }   // the analysis page
@@ -406,14 +406,16 @@
   }
   const labId = (p) => String(p.lab_phage_id || "").replace(/^RUD-/i, "");
   const LIST_COLS = [["name", "Phage", (p) => p.phage_name], ["lab", "Rud Lab ID", labId], ["host", "Genus", (p) => p.host_genus], ["species", "Species", (p) => p.host_species], ["strain", "Strain", (p) => p.host_strain], ["cluster", "Cluster", (p) => p.phagesdb_cluster], ["subcluster", "Subcluster", (p) => p.phagesdb_subcluster]];
+  // A phage has a digest image when its record carries one (usually from PhagesDB) or one of its digests has an uploaded gel.
+  const hasGelImage = (p) => !!p.restriction_digest_image_url || (S.digestIndex.get(p.phage_id) || []).some((x) => x.gel_image_path || x.gel_image_url);
   function listRows() {
     const F = S.filters, has = (v, f) => !f || String(v || "").toLowerCase().includes(f.trim().toLowerCase());
     const dn = (p) => (S.digestIndex.get(p.phage_id) || []).length, toCheck = (p) => (S.digestIndex.get(p.phage_id) || []).filter((x) => !x.results_checked).length;
     let rows = S.catalog.filter((p) => LIST_COLS.every((c) => has(c[2](p), F[c[0]]) || (c[0] === "lab" && has(p.lab_phage_id, F.lab)))
-      && (!F.genome || (F.genome === "yes") === !!p.genome_length_bp)
+      && (!F.genome || (F.genome === "yes") === !!p.genome_length_bp) && (!F.image || (F.image === "yes") === hasGelImage(p))
       && (!F.digest || (F.digest === "yes" ? dn(p) > 0 : F.digest === "no" ? dn(p) === 0 : F.digest === "tocheck" ? toCheck(p) > 0 : dn(p) > 0 && toCheck(p) === 0)));
     const col = LIST_COLS.find((c) => c[0] === S.sort.k);
-    const key = col ? (p) => String(col[2](p) || "").toLowerCase() : S.sort.k === "genome" ? (p) => p.genome_length_bp || 0 : dn;
+    const key = col ? (p) => String(col[2](p) || "").toLowerCase() : S.sort.k === "genome" ? (p) => p.genome_length_bp || 0 : S.sort.k === "image" ? (p) => (hasGelImage(p) ? 1 : 0) : dn;
     rows = rows.slice().sort((a, b) => { const x = key(a), y = key(b); if (x === "" && y !== "") return 1; if (y === "" && x !== "") return -1; return (x < y ? -1 : x > y ? 1 : 0) * S.sort.dir || (a.phage_name || "").localeCompare(b.phage_name || ""); });
     return rows;
   }
@@ -428,9 +430,9 @@
       <button data-page="-1"${S.page ? "" : " disabled"}>◀ Previous</button><span class="sub">Page ${S.page + 1} of ${pages} · ${fmt(rows.length)} of ${fmt(S.catalog.length)} phages</span><button data-page="1"${S.page < pages - 1 ? "" : " disabled"}>Next ▶</button>
       ${Object.values(F).some(Boolean) ? '<button data-act="clearfilters">Clear filters</button>' : ""}</div>`;
     return `<div class="card"><h2>Phages</h2>${pager}
-      <div class="tablescroll"><table class="list sortable"><thead><tr>${LIST_COLS.map((c) => th(c[0], c[1])).join("")}${th("genome", "Genome")}${th("digest", "Restriction digests")}</tr>
-      <tr class="filters">${LIST_COLS.map((c) => tf(c[0])).join("")}${sf("genome", "has a sequence", "no sequence")}<td><select data-lf="digest">${[["", "all"], ["tocheck", "need checking"], ["checked", "all checked"], ["yes", "has a digest"], ["no", "none yet"]].map((o) => `<option value="${o[0]}"${F.digest === o[0] ? " selected" : ""}>${o[1]}</option>`).join("")}</select></td></tr></thead><tbody>
-      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") + (d.some((x) => !x.results_checked) ? " " + chip(d.length === 1 ? "to check" : `${d.filter((x) => !x.results_checked).length} to check`, "warn") : " " + chip("checked", "ok")) : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 2}" class="sub">No phage matches these filters.</td></tr>`}
+      <div class="tablescroll"><table class="list sortable"><thead><tr>${LIST_COLS.map((c) => th(c[0], c[1])).join("")}${th("genome", "Genome")}${th("image", "Digest image")}${th("digest", "Restriction digests")}</tr>
+      <tr class="filters">${LIST_COLS.map((c) => tf(c[0])).join("")}${sf("genome", "has a sequence", "no sequence")}${sf("image", "has an image", "no image")}<td><select data-lf="digest">${[["", "all"], ["tocheck", "need checking"], ["checked", "all checked"], ["yes", "has a digest"], ["no", "none yet"]].map((o) => `<option value="${o[0]}"${F.digest === o[0] ? " selected" : ""}>${o[1]}</option>`).join("")}</select></td></tr></thead><tbody>
+      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${hasGelImage(p) ? chip("image", "ok") : chip("no image", "warn")}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") + (d.some((x) => !x.results_checked) ? " " + chip(d.length === 1 ? "to check" : `${d.filter((x) => !x.results_checked).length} to check`, "warn") : " " + chip("checked", "ok")) : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 3}" class="sub">No phage matches these filters.</td></tr>`}
       </tbody></table></div>${pager}</div>`;
   }
   // ---------- the enzyme page: preset lists, the enzyme catalogue, and (owners) adding an enzyme ----------
