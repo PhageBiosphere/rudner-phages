@@ -653,7 +653,7 @@
     };
     return `<div class="two">${cards.map((c, i) => `<div class="imgbox"><div class="row"><b>Digest image ${i + 1}</b> <span class="sub">${esc(c.title)}</span></div>
         ${c.exps.map(line).join("")}
-        ${c.canAdd ? `<div class="row res"><a class="btn${c.exps.length ? "" : " primary"}" href="#/phage/${p.phage_id}/digest/new">Add digest result</a><span class="sub">${c.exps.length ? "another reading of this image" : ""}</span></div>` : ""}
+        ${c.canAdd && !c.exps.length ? `<div class="row res"><a class="btn primary" href="#/phage/${p.phage_id}/digest/new">Add digest result</a></div>` : ""}
         ${c.img ? `<a href="${esc(c.img)}" target="_blank" rel="noopener"><img src="${esc(c.img)}" alt="Restriction digest"></a>` : '<div class="empty">No digest image yet. Add one below, or record a result without an image.</div>'}</div>`).join("")}</div>
       <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>`;
   }
@@ -875,6 +875,8 @@
   let route = { name: "list" };
   function render() {
     const ae = document.activeElement, keepKey = ae && ae.dataset && ae.dataset.lf && ae.tagName === "INPUT" ? ae.dataset.lf : null, keep = keepKey ? ae.selectionStart : null;
+    const here = route.name === "analysis" ? "#/analysis" : route.name === "enzymes" ? "#/enzymes" : "#/";
+    for (const a of document.querySelectorAll("header nav a")) a.classList.toggle("on", !!S.role && a.getAttribute("href") === here);
     userBox.innerHTML = S.user ? `${esc(S.name || S.user.email || "")}${S.role ? ` · ${esc(S.role)}` : ""} <button id="signout">Sign out</button>` : "";
     if (!S.user) app.innerHTML = viewSignIn(S.msg);
     else if (!S.role || S.role === "viewer") app.innerHTML = viewNoAccess();
