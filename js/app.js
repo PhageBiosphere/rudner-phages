@@ -261,7 +261,33 @@
     if (r.error) S.msg = `Preset not deleted: ${r.error.message || r.error}`; else { await loadPresets(); S.msg = "Preset deleted. Digests that used it are unchanged."; }
   }
   // ---------- images ----------
+  // A PDF gel: its first page is drawn as an image here in the browser. The PDF reader (pdf.js) is only loaded when a PDF is chosen.
+  const isPdf = (file) => /\.pdf$/i.test(file.name || "") || file.type === "application/pdf";
+  let pdfLib = null;
+  function loadPdfLib() {
+    if (!pdfLib) pdfLib = new Promise((resolve, reject) => {
+      const s = document.createElement("script"); s.src = "js/vendor/pdf.min.js";
+      s.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = "js/vendor/pdf.worker.min.js"; resolve(window.pdfjsLib); };
+      s.onerror = () => { pdfLib = null; reject(new Error("The PDF reader could not be loaded.")); };
+      document.head.appendChild(s);
+    });
+    return pdfLib;
+  }
+  async function pdfToImage(file) {
+    const lib = await loadPdfLib();
+    let doc;
+    try { doc = await lib.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise; } catch (err) { throw new Error("That PDF could not be read. If it is password-protected, export the gel as an image instead."); }
+    const page = await doc.getPage(1), v1 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: Math.min(6, CFG.IMAGE_MAX_SIDE / Math.max(v1.width, v1.height)) });
+    const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(vp.width)); c.height = Math.max(1, Math.round(vp.height));
+    const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: g, viewport: vp }).promise;
+    const blob = await new Promise((r) => c.toBlob(r, "image/jpeg", CFG.IMAGE_QUALITY));
+    if (!blob) throw new Error("The PDF page could not be converted to an image.");
+    return { blob, w: c.width, h: c.height, pages: doc.numPages };
+  }
+  const pdfNote = (r) => (r.pages ? (r.pages > 1 ? ` Page 1 of the PDF's ${r.pages} pages was used.` : " The PDF page was turned into an image.") : "");
   function resizeImage(file) {
+    if (isPdf(file)) return pdfToImage(file);
     return new Promise((resolve, reject) => {
       if (/\.tiff?$/i.test(file.name) || /tiff/i.test(file.type)) return reject(new Error("Browsers can't read TIFF files. Export the gel as JPEG or PNG and upload that."));
       const url = URL.createObjectURL(file), img = new Image();
@@ -287,7 +313,7 @@
       const up = await sb.storage.from(CFG.IMAGE_BUCKET).upload(path, r.blob, { contentType: "image/jpeg", upsert: false });
       if (up.error) throw up.error;
       if (kind === "gel") D.gelPath = path; else if (kind === "control") D.controlPath = path; else D.virtualPath = path;
-      S.msg = `Image uploaded (${r.w} × ${r.h}, ${Math.round(r.blob.size / 1024)} KB). Save to keep it with this digest.`;
+      S.msg = `Image uploaded (${r.w} × ${r.h}, ${Math.round(r.blob.size / 1024)} KB).${pdfNote(r)} Save to keep it with this digest.`;
     } catch (err) { S.msg = err.message || String(err); }
     S.busy = ""; render();
   }
@@ -816,7 +842,7 @@
       const ins = await sb.from("restriction_digest_experiments").insert({ restriction_digest_experiment_id: id, phage_id: S.phage.phage_id, gel_image_path: path, lane_layout: [] });
       if (ins.error) throw ins.error;
       await loadBase(); await loadPhage(S.phage.phage_id);
-      S.msg = "Digest image added. Use Add digest result on its card to record the enzymes and results.";
+      S.msg = `Digest image added.${pdfNote(r)} Use Add digest result on its card to record the enzymes and results.`;
     } catch (err) { S.msg = `Image not added: ${err.message || err}`; }
     S.busy = ""; render();
   }
@@ -835,7 +861,7 @@
     return `<p><a href="#/">← All phages</a></p>
       <div class="card"><div class="row phead"><h2>${esc(p.phage_name)} <span class="sub">ID ${esc(labId(p))}</span></h2>
         <span class="sub">${esc(hostOf(p))}${p.phagesdb_cluster ? " · Cluster " + esc(p.phagesdb_subcluster || p.phagesdb_cluster) : ""}${p.genome_length_bp ? " · " + fmt(p.genome_length_bp) + " bp" : " · no genome sequence yet"}</span></div>
-      <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>
+      <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*,application/pdf,.pdf" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>
       ${phageSummary()}
       ${imageCards()}
       </div>`;
@@ -880,7 +906,7 @@
   function imageBox(kind, title, path, legacy) {
     const own = publicUrl(path), url = own || legacy || "";
     const from = !own && url ? `<p class="tiny">Showing the image from ${srcName(url)}. Upload one only if this digest has its own gel.</p>` : "";
-    return `<div class="imgbox"><div class="row"><b>${title}</b><label class="btn">${url ? "Replace image" : "Upload image"}<input type="file" accept="image/jpeg,image/png,image/webp" data-upload="${kind}" hidden></label></div>
+    return `<div class="imgbox"><div class="row"><b>${title}</b><label class="btn">${url ? "Replace image" : "Upload image"}<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf" data-upload="${kind}" hidden></label></div>
       ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener"><img src="${esc(url)}" alt="${title}"></a>${from}` : '<div class="empty">No image yet. JPEG or PNG; it is resized before upload.</div>'}</div>`;
   }
 
@@ -923,7 +949,7 @@
   function gelPair(kind, above) {
     const D = S.D, k = K(kind);
     const from = k.img && !k.ownImg ? ` <span class="sub">from ${srcName(k.img)}</span>` : "";
-    const empty = k.ctl ? "No control digest image yet. Add one under <b>Control image and control DNA</b> below." : "No lab digest image yet. Add one under <b>Gel image and date</b> below.";
+    const empty = k.ctl ? "No control digest image yet. Use <b>Add a control digest image</b> above (JPEG, PNG or PDF)." : "No lab digest image yet. Use <b>Add a lab digest image</b> above (JPEG, PNG or PDF).";
     const noSeq = k.ctl ? (S.control && S.control.error) || "Loading the control sequence…" : S.genome && S.genome.loading ? "Reading the genome…" : "No genome sequence yet, so no virtual digest. Results can still be recorded now and compared later.";
     return `<div class="row tools">
         <span class="gelopt"><label class="check">Ladder <select data-f="ladder" data-redraw><option value="">generic 1 kb</option>${CFG.LADDERS.concat(D.ladder && !CFG.LADDERS.includes(D.ladder) ? [D.ladder] : []).map((l) => `<option${l === D.ladder ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label></span>
@@ -937,7 +963,7 @@
       ${above || ""}
       <div class="two gels" id="gels">
         ${S.guide.on ? `<div class="guide" id="guide" style="top:${S.guide.y}px" title="Drag up or down to compare band positions"><span>drag</span></div>` : ""}
-        <div><b>${k.title}</b>${from}${k.img ? ` <span class="zoomctl"><button class="mini" data-zoom="-1"${S.zoom.k > 1 ? "" : " disabled"} title="Zoom out">−</button><span class="sub">${Math.round(S.zoom.k * 100)}%</span><button class="mini" data-zoom="1"${S.zoom.k < 5 ? "" : " disabled"} title="Zoom in; then drag the image to move it">+</button><button class="mini" data-zoom="0"${S.zoom.k > 1 ? "" : " disabled"}>reset</button></span>
+        <div><b>${k.title}</b>${from} <label class="btn mini" title="JPEG, PNG or PDF. A PDF's first page is turned into an image.">${k.ownImg ? "Replace image" : k.ctl ? "Add a control digest image" : "Add a lab digest image"}<input type="file" accept="image/jpeg,image/png,image/webp,application/pdf,.pdf" data-upload="${k.ctl ? "control" : "gel"}" hidden></label>${k.img ? ` <span class="zoomctl"><button class="mini" data-zoom="-1"${S.zoom.k > 1 ? "" : " disabled"} title="Zoom out">−</button><span class="sub">${Math.round(S.zoom.k * 100)}%</span><button class="mini" data-zoom="1"${S.zoom.k < 5 ? "" : " disabled"} title="Zoom in; then drag the image to move it">+</button><button class="mini" data-zoom="0"${S.zoom.k > 1 ? "" : " disabled"}>reset</button></span>
           <div class="zoomwrap${S.zoom.k > 1 ? " zoomed" : ""}"><img class="big" src="${esc(k.img)}" alt="${k.title}" draggable="false" style="transform:translate(${S.zoom.x}px,${S.zoom.y}px) scale(${S.zoom.k})"></div>` : `<div class="empty">${empty}</div>`}
           ${k.img ? `<p class="tiny"><a href="${esc(k.img)}" target="_blank" rel="noopener">Open the image</a>${!k.ctl && D.gelOriginal ? ` · <a href="${esc(D.gelOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}${k.ctl && D.controlOriginal ? ` · <a href="${esc(D.controlOriginal)}" target="_blank" rel="noopener">full-size original</a> (lab members only)` : ""}</p>` : ""}</div>
         <div><b>Virtual digest</b> <span class="sub">${esc(k.dnaName)}, from the DNA sequence, same lane order</span><div id="vgel">${k.seq ? virtualGel(kind) : `<div class="empty">${esc(noSeq)}</div>`}</div></div>
@@ -982,6 +1008,7 @@
         <span>Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"], ["none", "No control"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></span>
         <button class="primary" data-act="save"${S.busy ? " disabled" : ""}>Save</button>
         <button data-act="savenext"${S.busy ? " disabled" : ""} title="Ticks 'Results checked', saves, and opens the next digest that still needs checking">Checked: save and next ▶</button>
+        <button data-act="cancel"${S.busy ? " disabled" : ""} title="Leaves this digest without saving; anything changed since the last save is dropped">Cancel</button>
         ${S.role === "owner" && !D.isNew ? (D.delAsk ? `<span class="t-bad">Delete this digest and all its results?</span><button data-act="delyes"${S.busy ? " disabled" : ""}>Yes, delete</button><button data-act="delno">No</button>` : '<button data-act="del" title="Owners only: removes this digest, its results and its uploaded images">Delete digest</button>') : ""}
         <span class="msg">${esc(S.busy || S.msg || (enz.length ? `${D.lanes.length} lane${D.lanes.length === 1 ? "" : "s"} · ${enz.length} enzyme${enz.length === 1 ? "" : "s"}${unset ? ` · ${unset} without a result` : ""}` : ""))}</span></div>
       </div>`;
@@ -1136,6 +1163,7 @@
     if (!D) return;
     if (t.dataset.act === "save") { save(); return; }
     if (t.dataset.act === "savenext") { saveAndNext(); return; }
+    if (t.dataset.act === "cancel") { guardOff = true; S.D = null; S.msg = ""; location.hash = `#/phage/${S.phage.phage_id}`; return; }   // Cancel is the answer, so no second question
     if (t.dataset.act === "del") { D.delAsk = true; render(); return; }
     if (t.dataset.act === "delno") { D.delAsk = false; render(); return; }
     if (t.dataset.act === "delyes") { deleteDigest(); return; }

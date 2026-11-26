@@ -113,6 +113,18 @@ test.describe("Digest page", () => {
     await expect(page).toHaveURL(/#\/analysis$/);
     await page.waitForSelector("table.main");
   });
+  test("Cancel leaves the digest without saving and without asking", async ({ page }) => {
+    await open(page, "#/phage/p08/digest/xp08");
+    await page.waitForSelector("table.results");
+    await page.keyboard.press("3");
+    let asked = 0;
+    page.on("dialog", (d) => { asked += 1; d.dismiss().catch(() => {}); });
+    await page.click('[data-act="cancel"]');
+    await expect(page).toHaveURL(/#\/phage\/p08$/);
+    await expect(page.locator(".phead")).toContainText("Phage08");
+    expect(asked).toBe(0);
+    expect(await db(page, `D.restriction_digest_results.find((r) => r.restriction_digest_experiment_id === "xp08" && r.restriction_enzyme_id === "e0").observed_result`)).toBe("Digestion");
+  });
   test("an owner can delete a digest; other roles are not offered the button", async ({ page, browser }) => {
     await open(page, "#/phage/p09/digest/xp09");
     await page.click('[data-act="del"]');
@@ -139,6 +151,28 @@ test.describe("Digest page", () => {
     await expect(page.locator(".card > p.sub").first()).toContainText("Genome uploaded by the lab");
     await expect(page.locator("table.results tbody tr").nth(1).locator("td").first()).toContainText("1 cut");   // BamHI
     expect(await page.evaluate(() => [...window.__FILES__.keys()])).toEqual(["genome-fasta/p08.fasta"]);
+  });
+  test("a lab digest image can be added from the Lab digest panel, as a picture or as a PDF", async ({ page }) => {
+    await open(page, "#/phage/p08/digest/xp08");
+    await page.waitForSelector("table.results");
+    await expect(page.locator("#gels label.btn", { hasText: "Add a lab digest image" })).toBeVisible();
+    await page.setInputFiles('#gels [data-upload="gel"]', path.join(__dirname, "fixtures", "gel.png"));
+    await expect(page.locator(".savebar .msg")).toContainText("Image uploaded (600 × 400");
+    await expect(page.locator("#gels label.btn", { hasText: "Replace image" })).toBeVisible();
+    await page.setInputFiles('#gels [data-upload="gel"]', path.join(__dirname, "fixtures", "gel-two-pages.pdf"));
+    await expect(page.locator(".savebar .msg")).toContainText("Page 1 of the PDF's 2 pages was used");
+    const up = await page.evaluate(() => [...window.__FILES__.keys()]);
+    expect(up.length).toBe(2);
+    expect(up.every((k) => /^digest-images\/p08\/xp08\/gel-\d+\.jpg$/.test(k))).toBe(true);
+    await page.click('[data-act="save"]');
+    await expect(page.locator(".savebar .msg")).toContainText("Saved");
+    expect(await db(page, `D.restriction_digest_experiments.find((e) => e.restriction_digest_experiment_id === "xp08").gel_image_path`)).toMatch(/^p08\/xp08\/gel-\d+\.jpg$/);
+  });
+  test("a PDF can be added as a replicate image from the phage page", async ({ page }) => {
+    await open(page, "#/phage/p08");
+    await page.setInputFiles("[data-replicate]", path.join(__dirname, "fixtures", "gel-two-pages.pdf"));
+    await expect(page.locator(".imgbox")).toHaveCount(2);
+    await expect(page.locator(".msg").first()).toContainText("Digest image added. Page 1 of the PDF");
   });
   test("the gel image zooms in and resets", async ({ page }) => {
     await open(page, "#/phage/p07/digest/xp07");      // Phage07 has a gel picture in the stand-in data

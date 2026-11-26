@@ -40,6 +40,7 @@ Editors can upload a phage's own genome FASTA from the digest page; it is kept i
 | `js/config.js` | the database address and settings (the only file to change when the database moves) |
 | `js/digest.js` | virtual digest and gel drawing |
 | `js/app.js` | sign-in, phage list, digest editor |
+| `js/vendor/pdf.min.js`, `js/vendor/pdf.worker.min.js` | pdf.js 3.11.174 (Mozilla, Apache-2.0), loaded only when a PDF gel is chosen, to turn its first page into an image |
 | `js/vendor/supabase.js` | the Supabase client library (v2.119.2), kept in the repository so the site has no outside dependencies |
 | `data/lambda.fasta` | lambda DNA, the default control |
 
@@ -55,7 +56,7 @@ From this folder run `python -m http.server 8000` and open <http://localhost:800
 
 ## Images
 
-Gel images are resized in the browser (longer side at most 2000 px, JPEG) and uploaded to the public storage bucket `digest-images`; the database stores the path inside the bucket, not a full address. The optional link to a full-size original (SharePoint / OneDrive) is stored in a column only lab members can read.
+A gel can be added as a JPEG, PNG or PDF, from the phage page or from the Lab digest panel of a digest; a PDF's first page is turned into an image. Gel images are resized in the browser (longer side at most 2000 px, JPEG) and uploaded to the public storage bucket `digest-images`; the database stores the path inside the bucket, not a full address. The optional link to a full-size original (SharePoint / OneDrive) is stored in a column only lab members can read.
 
 ## Who can do what
 
