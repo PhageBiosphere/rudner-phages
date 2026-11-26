@@ -1,0 +1,7 @@
+{
+  "name": "rudner-phages-tests",
+  "private": true,
+  "description": "Browser tests for the Phage DNA Modification Analysis site. They run against a stand-in database, never the lab's real one.",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": { "@playwright/test": "^1.48.0" }
+}

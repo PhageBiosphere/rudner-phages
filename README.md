@@ -18,6 +18,20 @@ Each phage page shows its **digest images** as cards: the picture already on the
 
 A digest can be saved at any point: with only the enzymes chosen, with only the gel, or with some results still to enter.
 
+## Checking digests
+
+A digest page has **Checked: save and next**, which ticks "Results checked against the gel", saves, and opens the next digest that still needs checking. The arrow keys choose an enzyme and the keys 1 to 4 set its result. Leaving a digest with unsaved changes asks first. Owners can delete a digest. The gel image can be zoomed and dragged.
+
+The phage page puts the name, ID and host on one row, then a summary line (blocked enzymes, likely modification, digests checked), then one card per digest image with that image's results and an Edit button.
+
+The Analysis page also has **Figure 3** (each combination of blocked enzymes and how many phages show it) and a plot in Figure 2. Its filters are remembered in the browser, and **Copy link to this view** gives an address that opens the same view.
+
+Editors can upload a phage's own genome FASTA from the digest page; it is kept in the private storage bucket `genome-fasta` and used for the virtual digest ahead of the SharePoint file and PhagesDB. Owners can edit an enzyme's sensitivity notes on the Enzyme details page.
+
+## Tests
+
+`tests/` holds browser tests that run against a stand-in database (see `tests/README.md`). GitHub runs them on every push.
+
 ## Files
 
 | Path | What it is |

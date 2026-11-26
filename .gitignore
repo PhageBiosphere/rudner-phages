@@ -1,0 +1,6 @@
+node_modules/
+tests/node_modules/
+tests/test-results/
+tests/playwright-report/
+tests/package-lock.json
+Claude outputs/
