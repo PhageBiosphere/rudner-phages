@@ -165,3 +165,16 @@ table.qtab .qbar{min-width:160px}
 #anphages{scroll-margin-top:64px}
 table.results th .mv button.rm{margin-left:4px;color:var(--bad)}
 table.results th .mv button.rm:disabled{color:var(--sub);opacity:.5}
+table.list td.nw{white-space:nowrap}
+h2 a.pdb{color:inherit;text-decoration:underline;text-decoration-color:#9bb8e8;text-underline-offset:3px}
+h2 a.pdb:hover{color:var(--blue)}
+h2 a.pdb .ext{font-size:.6em;margin-left:3px;color:var(--blue);vertical-align:super}
+/* long tables scroll inside a box; the headings stay in view */
+.listbox{overflow:auto;border:1px solid var(--line);border-radius:6px}
+.listbox table{margin:0}
+.listbox thead th,.listbox thead td{position:sticky;top:0;z-index:2;background:#fafbfc}
+.listbox thead tr.filters td{background:#fff;box-shadow:0 1px 0 var(--line)}
+input.lq{width:230px}
+a.pdbx{color:var(--blue);text-decoration:none;font-size:12px;padding:0 3px}
+a.pdbx:hover{text-decoration:underline}
+p.gsrc{margin:2px 0 8px}

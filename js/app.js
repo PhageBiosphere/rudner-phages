@@ -20,10 +20,10 @@
     genome: null,          // {seq, label, source, circular, assembly_id, sha256} or {error}
     genes: null,           // {hits:[term], n}
     D: null, msg: "", busy: "", open: { enz: null, gel: null, ctl: null }, tab: "digest", guide: { on: true, y: 160 },
-    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "" }, pageSize: 25, page: 0,
+    sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "", q: "" }, rows: "10", scroll: { list: 0, an: 0 }, gsrc: null, afiles: null,
     control: null,         // {seq, name}
     an: { loaded: false, raw: null, by: new Map(), checked: new Map(), queued: new Set(), sel: new Set(), qask: false, shownIds: [], show: "all", enz: "", q: "", min: "0", seq: "", host: "", chk: "", follow: false,
-      sort: { k: "name", dir: 1 }, size: "25", page: 0, fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, f4: { sort: { k: "ngenes", dir: -1 }, f: {}, size: "15" }, genes: [], isl: new Map(), msg: "", busy: false }   // the analysis page
+      sort: { k: "name", dir: 1 }, size: "20", fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, f4: { sort: { k: "ngenes", dir: -1 }, f: {}, size: "15" }, genes: [], isl: new Map(), msg: "", busy: false }   // the analysis page
   };
 
   const GEL_OPT = { numbers: true, names: true, scale: true, height: 300, run: 1, gap: 0, wells: 0 };
@@ -36,9 +36,20 @@
     for (const k of AN_KEYS) if (k in o && typeof o[k] === typeof A[k]) A[k] = o[k];
     if (okSort(o.sort)) A.sort = { k: o.sort.k, dir: o.sort.dir };
     for (const f of ["f1", "f2", "f3", "f4"]) { const x = o[f]; if (!x || typeof x !== "object") continue; if (okSort(x.sort)) A[f].sort = { k: x.sort.k, dir: x.sort.dir }; if (x.f && typeof x.f === "object") A[f].f = Object.fromEntries(Object.entries(x.f).filter((e) => typeof e[1] === "string")); if (typeof x.size === "string" && A[f].size) A[f].size = x.size; }
-    A.page = 0;
+    if (!ROWS_SHOWN.some((r) => r[0] === A.size)) A.size = "20";   // a size remembered from when the table had pages
+    S.scroll.an = 0;
   }
   const AN_DEFAULT = JSON.stringify(anState());
+  // The Phages tab remembers its filters, sort order and box height between visits.
+  const ROWS_SHOWN = [["10", "10"], ["20", "20"], ["40", "40"], ["fit", "fit the window"]];
+  try {
+    const o = JSON.parse(localStorage.getItem("rudner.phages") || "null");
+    if (o && typeof o === "object") {
+      if (o.filters && typeof o.filters === "object") for (const k in S.filters) if (typeof o.filters[k] === "string") S.filters[k] = o.filters[k];
+      if (okSort(o.sort)) S.sort = { k: o.sort.k, dir: o.sort.dir };
+      if (ROWS_SHOWN.some((r) => r[0] === o.rows)) S.rows = o.rows;
+    }
+  } catch (err) { /* remembered settings are optional */ }
   try { anApply(JSON.parse(localStorage.getItem("rudner.analysis") || "null")); } catch (err) { /* remembered filters are optional */ }
   try { Object.assign(GEL_OPT, JSON.parse(localStorage.getItem("rudner.gelopt") || "{}")); } catch (err) { /* remembered settings are optional */ }
   const saveGelOpt = () => { try { localStorage.setItem("rudner.gelopt", JSON.stringify(GEL_OPT)); } catch (err) { /* not remembered */ } };
@@ -96,8 +107,9 @@
   }
   async function loadPhage(id) {
     S.phage = S.catalog.find((p) => p.phage_id === id) || null;
-    S.digests = []; S.results = []; S.genome = null; S.genes = null; S.pisl = null;
+    S.digests = []; S.results = []; S.genome = null; S.genes = null; S.pisl = null; S.gsrc = null;
     if (!S.phage) return;
+    loadGenomeSource(id);   // optional, arrives a moment later
     sb.from("gene_browse_public").select("source,gene_key,phage_id,gene_number,start_bp,end_bp,strand,product").eq("phage_id", id).range(0, 999).then((g) => {   // optional, arrives a moment later
       if (!g.error && g.data && g.data.length && S.phage && S.phage.phage_id === id) { S.pisl = findIslands(g.data); if (route.name === "phage") render(); }
     }, () => {});
@@ -121,16 +133,62 @@
   async function sha256hex(text) {
     try { const b = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)); return [...new Uint8Array(b)].map((x) => x.toString(16).padStart(2, "0")).join(""); } catch (err) { return null; }
   }
+  // Whether an uploaded genome is circular is written in its FASTA header (topology=circular), so the file describes itself.
+  const topoOf = (text) => { const h = (String(text).match(/^>.*$/m) || [""])[0]; return /circular\s*=\s*(true|yes|1)\b|topology\s*=\s*circular/i.test(h) ? true : /circular\s*=\s*(false|no|0)\b|topology\s*=\s*linear/i.test(h) ? false : null; };
+  const setTopo = (text, circ) => String(text).replace(/^>.*$/m, (h) => `${h.replace(/\s*\b(circular|topology)\s*=\s*\S+/gi, "").trimEnd()} topology=${circ ? "circular" : "linear"}`);
+  async function setTopology(circ) {
+    const name = `${S.phage.phage_id}.fasta`;
+    S.busy = "Saving…"; render();
+    try {
+      const d = await sb.storage.from(GENOME_BUCKET).download(name);
+      if (d.error || !d.data) throw d.error || new Error("the uploaded genome file could not be read.");
+      const text = setTopo(await d.data.text(), circ);
+      const up = await sb.storage.from(GENOME_BUCKET).upload(name, new Blob([text], { type: "text/plain" }), { contentType: "text/plain", upsert: true });
+      if (up.error) throw up.error;
+      S.genome = null; S.genes = null; S.busy = ""; S.msg = `The genome is now marked as ${circ ? "circular" : "linear"}. The virtual digest has been redrawn.`;
+      loadGenome();
+    } catch (err) { S.busy = ""; S.msg = `Not changed: ${err.message || err}`; render(); }
+  }
+  // Genome sequences the sequencing tracker stored for assemblies: genome-fasta/assemblies/<assembly_id>.fasta
+  async function assemblyFiles() {
+    if (!S.afiles) {
+      const names = new Set();
+      for (let offset = 0; ; offset += 1000) {
+        const r = await sb.storage.from(GENOME_BUCKET).list("assemblies", { limit: 1000, offset });
+        if (r.error) break;
+        for (const x of r.data || []) names.add(x.name);
+        if (!r.data || r.data.length < 1000) break;
+      }
+      S.afiles = names;
+    }
+    return S.afiles;
+  }
+  // Where the phage's genome sequence would be read from, for the phage page (the sequence itself is not read here).
+  async function loadGenomeSource(id) {
+    try {
+      const st = await sb.from("phage_workflow_status_public").select("selected_assembly_id,assembly_label,fasta_download_url,circularized").eq("phage_id", id).maybeSingle();
+      const rec = st.data || {}, p = S.phage;
+      let out;
+      if (rec.selected_assembly_id && (await assemblyFiles()).has(`${rec.selected_assembly_id}.fasta`)) out = ["ok", `Rudner Lab database: ${rec.assembly_label || "selected assembly"}${rec.circularized === true ? ", circular" : rec.circularized === false ? ", linear" : ""}`, "The phage's selected genome, kept in the lab database by the sequencing tracker"];
+      else if ((await genomeFiles()).has(`${id}.fasta`)) out = ["warn", "temporary upload on this site", "Uploaded on a digest page for the virtual digest only; it is not in the Rudner Lab database"];
+      else if (rec.fasta_download_url) out = ["warn", "lab assembly on SharePoint", "The lab database has this genome's details, but its sequence file is on SharePoint, which this site usually cannot read. Store it from the sequencing tracker."];
+      else if (p && p.genome_length_bp) out = ["mute", "PhagesDB", "No lab genome is stored; the sequence is read from PhagesDB when a digest is opened"];
+      else out = ["mute", "none recorded", "PhagesDB is still tried when a digest is opened"];
+      if (S.phage && S.phage.phage_id === id) { S.gsrc = out; if (route.name === "phage") render(); }
+    } catch (err) { /* the line is simply not shown */ }
+  }
   async function uploadGenome(file) {
     S.busy = "Reading the genome file…"; render();
     try {
       const text = await file.text(), f = DG.parseFasta(text);
       if (!/^\s*>/.test(text) || f.seq.length < 1000) throw new Error("that file does not look like a genome FASTA (a line starting with >, then at least 1,000 bases).");
+      const letters = text.split(/\r?\n/).filter((l) => !l.startsWith(">")).join("").replace(/[^A-Za-z]/g, "");
+      if ((letters.match(/[ACGTNacgtn]/g) || []).length < letters.length * 0.9) throw new Error("that file looks like protein sequences, not DNA. Upload the genome's DNA sequence (A, C, G and T).");
       const name = `${S.phage.phage_id}.fasta`;
       const up = await sb.storage.from(GENOME_BUCKET).upload(name, new Blob([text], { type: "text/plain" }), { contentType: "text/plain", upsert: true });
       if (up.error) throw up.error;
       (await genomeFiles()).add(name);
-      S.genome = null; S.genes = null; S.busy = ""; S.msg = `Genome uploaded (${fmt(f.seq.length)} bp). The virtual digest now uses it.`;
+      S.genome = null; S.genes = null; S.busy = ""; S.msg = `Temporary genome uploaded for this site only (${fmt(f.seq.length)} bp, ${topoOf(text) === true ? "circular, from the file's header" : topoOf(text) === false ? "linear, from the file's header" : "taken as linear; use the button beside the genome if it is circular"}). The virtual digest now uses it.`;
       loadGenome();
     } catch (err) { S.busy = ""; S.msg = `Genome not uploaded: ${err.message || err}`; render(); }
   }
@@ -138,11 +196,17 @@
     const st = await sb.from("phage_workflow_status_public").select("selected_assembly_id,assembly_label,assembly_sha256,fasta_download_url,circularized").eq("phage_id", phageId).maybeSingle();
     const rec = st.data || {};
     let text = "", source = "", label = "";
-    let up = false;
+    let up = false, stored = false;
+    // First the lab database's own copy of the phage's selected genome, kept there by the sequencing tracker's import
+    if (rec.selected_assembly_id && (await assemblyFiles()).has(`${rec.selected_assembly_id}.fasta`)) {
+      const path = `assemblies/${rec.selected_assembly_id}.fasta`;
+      const d = await sb.storage.from(GENOME_BUCKET).download(path);
+      if (!d.error && d.data) { const t = await d.data.text(); if (/^\s*>/.test(t)) { text = t; source = `Rudner Lab database (${GENOME_BUCKET}/${path})`; label = rec.assembly_label || "Rudner Lab assembly"; stored = true; } }
+    }
     const gname = `${phageId}.fasta`;
-    if ((await genomeFiles()).has(gname)) {
+    if (!text && (await genomeFiles()).has(gname)) {
       const d = await sb.storage.from(GENOME_BUCKET).download(gname);
-      if (!d.error && d.data) { text = await d.data.text(); source = `Rudner Lab upload (${GENOME_BUCKET}/${gname})`; label = "Genome uploaded by the lab"; up = true; }
+      if (!d.error && d.data) { text = await d.data.text(); source = `Rudner Lab upload (${GENOME_BUCKET}/${gname})`; label = "Temporary genome uploaded on this site (not in the lab database)"; up = true; }
     }
     let labErr = "";
     if (!text && rec.fasta_download_url) {
@@ -160,8 +224,9 @@
     }
     const f = DG.parseFasta(text);
     if (!f.seq.length) throw new Error("The genome file holds no DNA sequence.");
-    const lab = source === rec.fasta_download_url;   // the assembly's id and checksum only describe the lab's own file
-    return { seq: f.seq, label, source, circular: !!rec.circularized, assembly_id: lab ? rec.selected_assembly_id || null : null, sha256: up ? await sha256hex(text) : lab ? rec.assembly_sha256 || null : null };
+    const lab = stored || source === rec.fasta_download_url;   // the assembly's id and checksum only describe the lab's own file
+    const topo = up ? topoOf(text) : null;
+    return { seq: f.seq, label, source, uploaded: up, fromDb: stored, circular: topo === null ? !!rec.circularized : topo, assembly_id: lab ? rec.selected_assembly_id || null : null, sha256: up ? await sha256hex(text) : lab ? rec.assembly_sha256 || null : null };
   }
   async function loadGenome() {
     if (S.genome || !S.phage) return;
@@ -372,15 +437,19 @@
   // Review mode: tick "checked", save, and open the next digest that still needs checking (phages in name order).
   async function saveAndNext() {
     const cur = S.phage.phage_id, curId = S.D.id;
+    // The order and filters of the Phages tab, read before saving: once checked, this phage may no longer pass a "need checking" filter
+    let order = listRows();
+    if (!order.some((p) => p.phage_id === cur)) order = [S.phage].concat(order);
+    const filtered = order.length < S.catalog.length;
     S.D.checked = true;
     if (!(await save())) return;
-    const start = Math.max(0, S.catalog.findIndex((p) => p.phage_id === cur));
-    for (let k = 0; k < S.catalog.length; k++) {
-      const p = S.catalog[(start + k) % S.catalog.length];
+    const start = Math.max(0, order.findIndex((p) => p.phage_id === cur));
+    for (let k = 0; k < order.length; k++) {
+      const p = order[(start + k) % order.length];
       const x = (S.digestIndex.get(p.phage_id) || []).find((d) => !d.results_checked && d.restriction_digest_experiment_id !== curId);
       if (x) { location.hash = `#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}`; return; }
     }
-    S.msg = "Saved. Every digest has now been checked."; render();
+    S.msg = filtered ? "Saved. No other digest in the Phages tab's current list needs checking; clear its filters to see the rest." : "Saved. Every digest has now been checked."; render();
   }
   async function deleteDigest() {
     const D = S.D, pid = S.phage.phage_id;
@@ -414,7 +483,9 @@
   function listRows() {
     const F = S.filters, has = (v, f) => !f || String(v || "").toLowerCase().includes(f.trim().toLowerCase());
     const dn = (p) => (S.digestIndex.get(p.phage_id) || []).length, toCheck = (p) => (S.digestIndex.get(p.phage_id) || []).filter((x) => !x.results_checked).length;
-    let rows = S.catalog.filter((p) => LIST_COLS.every((c) => has(c[2](p), F[c[0]]) || (c[0] === "lab" && has(p.lab_phage_id, F.lab)))
+    const q = (F.q || "").trim().toLowerCase();
+    const anyq = (p) => !q || [p.phage_name, labId(p), p.lab_phage_id, p.host_genus, p.host_species, p.host_strain, p.phagesdb_cluster, p.phagesdb_subcluster].some((v) => String(v || "").toLowerCase().includes(q));
+    let rows = S.catalog.filter((p) => anyq(p) && LIST_COLS.every((c) => has(c[2](p), F[c[0]]) || (c[0] === "lab" && has(p.lab_phage_id, F.lab)))
       && (!F.genome || (F.genome === "yes") === !!p.genome_length_bp) && (!F.image || (F.image === "yes") === hasGelImage(p))
       && (!F.digest || (F.digest === "yes" ? dn(p) > 0 : F.digest === "no" ? dn(p) === 0 : F.digest === "tocheck" ? toCheck(p) > 0 : dn(p) > 0 && toCheck(p) === 0)));
     const col = LIST_COLS.find((c) => c[0] === S.sort.k);
@@ -423,20 +494,23 @@
     return rows;
   }
   function viewList() {
-    const rows = listRows(), F = S.filters, n = S.pageSize, pages = Math.max(1, Math.ceil(rows.length / n));
-    S.page = Math.min(S.page, pages - 1);
-    const shown = rows.slice(S.page * n, S.page * n + n);
+    const rows = listRows(), F = S.filters;
+    try { localStorage.setItem("rudner.phages", JSON.stringify({ filters: S.filters, sort: S.sort, rows: S.rows })); } catch (err) { /* not remembered */ }
+    const shown = rows;
+    const todo = rows.reduce((n, p) => n + (S.digestIndex.get(p.phage_id) || []).filter((x) => !x.results_checked).length, 0);
     const th = (k, label) => `<th data-sort="${k}" title="Sort by this column">${label} <span class="arrow">${S.sort.k === k ? (S.sort.dir > 0 ? "▲" : "▼") : ""}</span></th>`;
     const tf = (k) => `<td><input data-lf="${k}" value="${esc(F[k] || "")}" placeholder="filter"></td>`;
     const sf = (k, yes, no) => `<td><select data-lf="${k}"><option value="">all</option><option value="yes"${F[k] === "yes" ? " selected" : ""}>${yes}</option><option value="no"${F[k] === "no" ? " selected" : ""}>${no}</option></select></td>`;
-    const pager = `<div class="row pager"><label class="check">Rows <select id="pagesize">${[15, 25, 50, 100].map((v) => `<option${v === n ? " selected" : ""}>${v}</option>`).join("")}</select></label>
-      <button data-page="-1"${S.page ? "" : " disabled"}>◀ Previous</button><span class="sub">Page ${S.page + 1} of ${pages} · ${fmt(rows.length)} of ${fmt(S.catalog.length)} phages</span><button data-page="1"${S.page < pages - 1 ? "" : " disabled"}>Next ▶</button>
+    const pager = `<div class="row pager"><label class="check">Search <input class="lq" data-lf="q" value="${esc(F.q || "")}" placeholder="name, lab ID, host or cluster" title="Finds the text anywhere in the phage name, lab ID, host or cluster. The filter boxes under the headings narrow one column at a time."></label>
+      <label class="check" title="How tall the list is. Every phage is in the list; scroll to see the rest.">Rows shown <select data-lrows>${ROWS_SHOWN.map((o) => selOpt(o[0], o[1], S.rows)).join("")}</select></label>
+      <span class="sub"><b>${fmt(rows.length)}</b> of ${fmt(S.catalog.length)} phages</span>
+      <button data-act="checknext"${todo ? "" : " disabled"} title="Opens the first digest in this list that still needs checking; from there, 'Checked: save and next' walks down the list">Check next digest ▶</button><span class="sub">${fmt(todo)} to check in this list</span>
       ${Object.values(F).some(Boolean) ? '<button data-act="clearfilters">Clear filters</button>' : ""}</div>`;
     return `<div class="card"><h2>Phages</h2>${pager}
-      <div class="tablescroll"><table class="list sortable"><thead><tr>${LIST_COLS.map((c) => th(c[0], c[1])).join("")}${th("genome", "Genome")}${th("image", "Digest image")}${th("digest", "Restriction digests")}</tr>
+      <div class="tablescroll listbox" data-fit="${S.rows}" data-keep="list"><table class="list sortable"><thead><tr>${LIST_COLS.map((c) => th(c[0], c[1])).join("")}${th("genome", "Genome")}${th("image", "Digest image")}${th("digest", "Restriction digests")}</tr>
       <tr class="filters">${LIST_COLS.map((c) => tf(c[0])).join("")}${sf("genome", "has a sequence", "no sequence")}${sf("image", "has an image", "no image")}<td><select data-lf="digest">${[["", "all"], ["tocheck", "need checking"], ["checked", "all checked"], ["yes", "has a digest"], ["no", "none yet"]].map((o) => `<option value="${o[0]}"${F.digest === o[0] ? " selected" : ""}>${o[1]}</option>`).join("")}</select></td></tr></thead><tbody>
-      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${hasGelImage(p) ? chip("image", "ok") : chip("no image", "warn")}</td><td>${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") + (d.some((x) => !x.results_checked) ? " " + chip(d.length === 1 ? "to check" : `${d.filter((x) => !x.results_checked).length} to check`, "warn") : " " + chip("checked", "ok")) : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 3}" class="sub">No phage matches these filters.</td></tr>`}
-      </tbody></table></div>${pager}</div>`;
+      ${shown.map((p) => { const d = S.digestIndex.get(p.phage_id) || []; return `<tr data-go="#/phage/${p.phage_id}">${LIST_COLS.map((c, i) => `<td>${i ? esc(c[2](p) || "") : `<b>${esc(c[2](p) || "")}</b>${phagesdbUrl(p) ? ` <span data-nogo><a class="pdbx" href="${esc(phagesdbUrl(p))}" target="_blank" rel="noopener" title="Open on PhagesDB in a new tab (the page exists only if the phage is listed there)">↗</a></span>` : ""}`}</td>`).join("")}<td>${p.genome_length_bp ? fmt(p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td>${hasGelImage(p) ? chip("image", "ok") : chip("no image", "warn")}</td><td class="nw">${d.length ? chip(`${d.length} digest${d.length === 1 ? "" : "s"}`, "ok") + (d.some((x) => !x.results_checked) ? " " + chip(d.length === 1 ? "to check" : `${d.filter((x) => !x.results_checked).length} to check`, "warn") : " " + chip("checked", "ok")) : chip("none", "mute")}</td></tr>`; }).join("") || `<tr><td colspan="${LIST_COLS.length + 3}" class="sub">No phage matches these filters.</td></tr>`}
+      </tbody></table></div></div>`;
   }
   // ---------- the enzyme page: preset lists, the enzyme catalogue, and (owners) adding an enzyme ----------
   const tokName = (t) => (t === "L" ? "Ladder" : t === "U" ? "Uncut" : enzyme(t).enzyme_name || "(enzyme no longer listed)");
@@ -841,12 +915,10 @@
     const M = analysisModel(), used = M.used, rows = M.rows;
     try { localStorage.setItem("rudner.analysis", JSON.stringify(anState())); } catch (err) { /* not remembered */ }
     if (!M.all.length && !A.chk) return `<div class="card"><h2>Analysis</h2><p class="sub">No digest results have been recorded yet. Open a phage, add a digest and set a result for each enzyme; the phages then appear here.</p></div>`;
-    const per = A.size === "all" ? Math.max(1, rows.length) : Number(A.size) || 25, pages = Math.max(1, Math.ceil(rows.length / per));
-    A.page = Math.min(Math.max(0, A.page), pages - 1);
-    const shown = rows.slice(A.page * per, A.page * per + per);
+    const shown = rows;
     A.shownIds = shown.map((r) => r.p.phage_id);
-    const pager = `<div class="row pager"><label class="check">Rows <select data-an="size">${["15", "25", "50", "100"].map((v) => selOpt(v, v, A.size)).join("")}${selOpt("all", "all", A.size)}</select></label>
-      <button data-anpage="-1"${A.page ? "" : " disabled"}>◀ Previous</button><span class="sub">Page ${A.page + 1} of ${pages} · ${fmt(rows.length)} of ${fmt(M.all.length)} phages with results</span><button data-anpage="1"${A.page < pages - 1 ? "" : " disabled"}>Next ▶</button></div>`;
+    const pager = `<div class="row pager"><label class="check" title="How tall the table is. Every phage left by the filters is in it; scroll to see the rest.">Rows shown <select data-an="size">${ROWS_SHOWN.map((o) => selOpt(o[0], o[1], A.size)).join("")}</select></label>
+      <span class="sub"><b>${fmt(rows.length)}</b> of ${fmt(M.all.length)} phages with results</span></div>`;
     const cand = M.all.filter((r) => !r.p.genome_length_bp && r.blk.length >= 3).length, nsel = A.sel.size;
     const bar = `<div class="row anbar"><label class="check">Show <select data-an="show">${selOpt("all", "all phages with results", A.show)}${selOpt("blocked", "phages with a blocked enzyme", A.show)}${selOpt("confirmed", "blocked, confirmed by genome and control", A.show)}</select></label>
       <label class="check">Blocked enzymes <select data-an="min">${selOpt("0", "any number", A.min)}${[2, 3, 4, 5, 6].map((v) => selOpt(v, `${v} or more`, A.min)).join("")}</select></label>
@@ -860,7 +932,7 @@
       <button class="mini" data-act="seqcand" title="Not sequenced, 3 or more blocked enzymes, most blocked first">Show sequencing candidates</button>
       ${A.qask ? `<span class="sub">Add ${nsel} phage${nsel === 1 ? "" : "s"} to the sequencing queue?</span><button class="mini" data-act="queueyes">Yes</button><button class="mini" data-act="queueno">No</button>` : `<button class="mini" data-act="queue"${nsel && !A.busy ? "" : " disabled"} title="Tick phages in the first column, then add them to the lab's sequencing queue">Queue ${nsel || ""} selected for sequencing</button>`}
       <button class="mini" data-act="recompute"${A.busy ? " disabled" : ""} title="Reads each sequenced phage's genome and fills in the virtual digest for its recorded results">Recompute virtual digests</button>
-      <button class="mini" data-adl="main.csv" title="Every phage left by the filters, all pages">Download table (CSV)</button>
+      <button class="mini" data-adl="main.csv" title="Every phage left by the filters">Download table (CSV)</button>
       <button class="mini" data-act="anlink" title="Copies an address that opens this page with the same filters and sort order, to share with a lab member">Copy link to this view</button>
       <button class="mini" data-act="anreset" title="Back to all phages, sorted by name; the filters are otherwise remembered between visits">Clear filters</button><span class="msg">${esc(A.msg || "")}</span></div>`;
     const groupHead = SITE_GROUPS.map(([g, label]) => { const n = used.filter((z) => z.grp === g).length; return n ? `<th class="c g0 grp" colspan="${n}">${label}</th>` : ""; }).join("");
@@ -869,10 +941,10 @@
     const chkCell = (r) => (!r.chk.n ? "" : r.chk.c === r.chk.n ? '<span class="ok" title="Every digest of this phage has been checked against the gel">✓</span>' : r.chk.c ? `<span class="sub">${r.chk.c}/${r.chk.n}</span>` : '<span class="sub" title="Not yet checked against the gel">–</span>');
     return `<div class="card"><h2>Analysis <span class="sub">restriction enzyme results for every phage</span></h2>${figureGroups(M)}${figureGcAt(M)}${figurePatterns(M)}${figureIslands(M)}
       <hr class="sep"><h3 id="anphages" style="margin:0 0 4px">Phages</h3>${bar}${pager}
-      <div class="tablescroll tall"><table class="list an main"><thead><tr class="r1"><th class="sel" rowspan="2" title="Select every phage on this page"><input type="checkbox" data-aselall${allSel ? " checked" : ""}></th>${fixed.map((c) => sortTh("main", A, c[0], c[1], c[2], "", ' rowspan="2"')).join("")}${groupHead}</tr>
+      <div class="tablescroll tall" data-fit="${A.size}" data-keep="an"><table class="list an main"><thead><tr class="r1"><th class="sel" rowspan="2" title="Select every phage in the table"><input type="checkbox" data-aselall${allSel ? " checked" : ""}></th>${fixed.map((c) => sortTh("main", A, c[0], c[1], c[2], "", ' rowspan="2"')).join("")}${groupHead}</tr>
       <tr class="r2">${used.map((z, i) => sortTh("main", A, z.restriction_enzyme_id, esc(z.enzyme_name), "c" + (!i || used[i - 1].grp !== z.grp ? " g0" : ""), z.recognition_sequence || "")).join("")}</tr></thead><tbody>
       ${shown.map((r) => `<tr data-go="#/phage/${r.p.phage_id}"><td class="sel" data-nogo><input type="checkbox" data-asel="${r.p.phage_id}"${A.sel.has(r.p.phage_id) ? " checked" : ""}></td><td class="nm"><b>${esc(r.name)}</b>${A.queued.has(r.p.phage_id) ? ' <span class="chip" title="Already waiting in the sequencing queue">queued</span>' : ""}</td><td>${esc(labId(r.p))}</td><td>${esc(r.host)}</td><td>${esc(r.cluster)}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td><td class="c" title="${esc(r.blk.map((z) => z.enzyme_name).join(", "))}">${r.blk.length ? `<b>${r.blk.length}</b> <span class="sub">of ${r.tested}</span>` : `<span class="sub">0 of ${r.tested}</span>`}</td><td class="c">${chkCell(r)}</td>${used.map((z, i) => analysisCell(r.m.get(z.restriction_enzyme_id), !i || used[i - 1].grp !== z.grp)).join("")}</tr>`).join("") || `<tr><td colspan="${used.length + 8}" class="sub">No phage matches these filters.</td></tr>`}
-      </tbody></table></div>${pager}
+      </tbody></table></div>
       <p class="tiny">✓ digests · ~ partial digestion · ✗ does not digest · ? undetermined. Enzymes are grouped by their recognition site: only G and C, only A and T, or both. <b>Blocked</b> (a bold ✗ on a coloured cell): the lab gel shows no cut although the genome has sites for the enzyme, which points to DNA modification. Red is confirmed by the genome and a control digest; amber is provisional (no genome sequence, no control digest, or the control was not confirmed). A plain grey ✗ means the genome has no sites, so no cut is expected. Each cell shows the phage's most recent digest with that enzyme. Click a heading to sort and a row to open the phage.</p></div>`;
   }
   // ---------- analysis downloads ----------
@@ -1043,12 +1115,15 @@
       · Likely modified: ${r.call === "G/C" || r.call === "A/T" || r.call === "G/C and A/T" ? chip(r.call, "warn") : esc(r.call.toLowerCase())}${r.ev ? ` <span class="sub">(${esc(r.ev.toLowerCase())})</span>` : ""}
       · Checked: ${r.chk.c} of ${r.chk.n} digest${r.chk.n === 1 ? "" : "s"}${isl}${sens.length ? `<br><span class="sub">Known sensitivity of the blocked enzymes: ${esc(sens.join("; "))}</span>` : ""}</div>`;
   }
+  // Phages of hosts other than Staphylococcus are usually listed on PhagesDB under their own name (accents dropped).
+  const phagesdbUrl = (p) => { const n = String(p.phage_name || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").trim(); return n && !/^staphylococcus/i.test(String(p.host_genus || "").trim()) ? `https://phagesdb.org/phages/${encodeURIComponent(n)}/` : ""; };
   function viewPhage() {
-    const p = S.phage;
+    const p = S.phage, pdb = phagesdbUrl(p);
     return `<p><a href="#/">← All phages</a></p>
-      <div class="card"><div class="row phead"><h2>${esc(p.phage_name)} <span class="sub">ID ${esc(labId(p))}</span></h2>
+      <div class="card"><div class="row phead"><h2>${pdb ? `<a class="pdb" href="${esc(pdb)}" target="_blank" rel="noopener" title="Open this phage's page on PhagesDB in a new tab (the page exists only if the phage is listed there)">${esc(p.phage_name)}<span class="ext">↗</span></a>` : esc(p.phage_name)} <span class="sub">ID ${esc(labId(p))}</span></h2>
         <span class="sub">${esc(hostOf(p))}${p.phagesdb_cluster ? " · Cluster " + esc(p.phagesdb_subcluster || p.phagesdb_cluster) : ""}${p.genome_length_bp ? " · " + fmt(p.genome_length_bp) + " bp" : " · no genome sequence yet"}</span></div>
       <div class="row"><label class="btn">+ Add a digest image (replicate experiment)<input type="file" accept="image/*,application/pdf,.pdf" data-replicate hidden></label><span class="msg">${esc(S.busy || S.msg)}</span></div>
+      ${S.gsrc ? `<p class="sub gsrc">Genome sequence: <span class="chip ${S.gsrc[0]}" title="${esc(S.gsrc[2])}">${esc(S.gsrc[1])}</span></p>` : ""}
       ${phageSummary()}
       ${imageCards()}
       </div>`;
@@ -1085,10 +1160,12 @@
   }
   function genomeBox() {
     const g = S.genome;
-    const upl = S.role === "owner" || S.role === "editor" ? ` <label class="btn mini" title="Keeps the lab's own genome file for this phage where the site can read it (lab members only). It replaces any file uploaded before.">Upload a genome FASTA<input type="file" accept=".fasta,.fa,.fna,.fas,.txt" data-genomeup hidden></label>` : "";
+    // A genome belongs in the lab database (added through the sequencing tracker). The upload here is a stopgap for a
+    // phage whose sequence the site can't read yet, so it is not offered once the database's own copy is in use.
+    const upl = (S.role === "owner" || S.role === "editor") && !(g && g.fromDb) ? ` <label class="btn mini" title="A stopgap: keeps a genome file where this site can read it (lab members only), so the virtual digest works. It does not add the genome to the Rudner Lab database; do that through the sequencing tracker's import. It must be the DNA sequence of the whole genome, not protein sequences, and it replaces any file uploaded here before.">Upload a temporary genome DNA sequence (FASTA)<input type="file" accept=".fasta,.fa,.fna,.fas,.txt" data-genomeup hidden></label>` : "";
     if (!g || g.loading) return '<p class="sub">Reading the genome…</p>';
     if (g.error) return `<div class="note warn"><b>No virtual digest yet.</b> ${esc(g.error)} You can still record the lab digest now and come back when the sequence is available.${upl}</div>`;
-    return `<p class="sub">Genome: ${esc(g.label)} · ${fmt(g.seq.length)} bp · ${g.circular ? "circular" : "linear"}.${upl}${S.genes ? (S.genes.n ? (S.genes.hits.length ? ` <span class="chip warn">DNA-modification genes annotated: ${esc(S.genes.hits.join(", "))}</span>` : " No DNA-modification genes found in the annotation.") : " The genome is not annotated yet, so modification genes can't be checked.") : ""}</p>`;
+    return `<p class="sub">Genome: ${esc(g.label)} · ${fmt(g.seq.length)} bp · ${g.circular ? "circular" : "linear"}.${g.uploaded && upl ? ` <button class="mini" data-act="topo" data-circ="${g.circular ? "" : "1"}"${S.busy ? " disabled" : ""} title="Uploaded genomes are taken as linear unless the file says otherwise. This changes how the fragments of the virtual digest are counted.">Change to ${g.circular ? "linear" : "circular"}</button>` : ""}${upl}${S.genes ? (S.genes.n ? (S.genes.hits.length ? ` <span class="chip warn">DNA-modification genes annotated: ${esc(S.genes.hits.join(", "))}</span>` : " No DNA-modification genes found in the annotation.") : " The genome is not annotated yet, so modification genes can't be checked.") : ""}</p>`;
   }
   function imageBox(kind, title, path, legacy) {
     const own = publicUrl(path), url = own || legacy || "";
@@ -1194,7 +1271,7 @@
       <div class="savebar"><label class="check" title="Tick once the results above have been checked against the gel image"><input type="checkbox" data-chk${D.checked ? " checked" : ""}>Results checked against the gel</label>
         <span>Did the control digest as expected? <span class="seg">${[["true", "Yes"], ["false", "No"], ["none", "No control"]].map((o) => `<button data-control="${o[0]}" class="${String(D.control) === o[0] ? "on" : ""}">${o[1]}</button>`).join("")}</span></span>
         <button class="primary" data-act="save"${S.busy ? " disabled" : ""}>Save</button>
-        <button data-act="savenext"${S.busy ? " disabled" : ""} title="Ticks 'Results checked', saves, and opens the next digest that still needs checking">Checked: save and next ▶</button>
+        <button data-act="savenext"${S.busy ? " disabled" : ""} title="Ticks 'Results checked', saves, and opens the next digest that still needs checking, in the order and with the filters of the Phages tab">Checked: save and next ▶</button>
         <button data-act="cancel"${S.busy ? " disabled" : ""} title="Leaves this digest without saving; anything changed since the last save is dropped">Cancel</button>
         ${S.role === "owner" && !D.isNew ? (D.delAsk ? `<span class="t-bad">Delete this digest and all its results?</span><button data-act="delyes"${S.busy ? " disabled" : ""}>Yes, delete</button><button data-act="delno">No</button>` : '<button data-act="del" title="Owners only: removes this digest, its results and its uploaded images">Delete digest</button>') : ""}
         <span class="msg">${esc(S.busy || S.msg || (enz.length ? `${D.lanes.length} lane${D.lanes.length === 1 ? "" : "s"} · ${enz.length} enzyme${enz.length === 1 ? "" : "s"}${unset ? ` · ${unset} without a result` : ""}` : ""))}</span></div>
@@ -1256,7 +1333,22 @@
     else if (route.name === "quality") app.innerHTML = viewQuality();
     else app.innerHTML = viewList();
     if (keepKey) { const f = app.querySelector(`input[data-lf="${keepKey}"]`); if (f) { f.focus(); f.setSelectionRange(keep, keep); } }
+    fitBoxes();
   }
+  // A long table sits in a box a set number of rows tall (or as tall as the window allows) and scrolls inside it.
+  // The headings stay in view, and the box returns to where it was scrolled after the page is redrawn.
+  function fitBoxes() {
+    for (const box of app.querySelectorAll("[data-fit]")) {
+      const tb = box.querySelector("table"), head = tb && tb.tHead, row = tb && tb.tBodies[0] && tb.tBodies[0].rows[0];
+      if (!head) continue;
+      if (head.rows.length > 1) for (const c of head.rows[1].cells) c.style.top = head.rows[0].offsetHeight + "px";
+      const n = box.dataset.fit, rowH = row ? row.offsetHeight : 34;
+      box.style.maxHeight = (n === "fit" ? Math.max(rowH * 6 + head.offsetHeight, window.innerHeight - Math.max(0, box.getBoundingClientRect().top) - 20) : head.offsetHeight + rowH * (Number(n) || 10) + 2) + "px";
+      const y = S.scroll[box.dataset.keep] || 0; if (y) box.scrollTop = y;
+    }
+  }
+  document.addEventListener("scroll", (ev) => { const b = ev.target; if (b && b.dataset && b.dataset.keep) S.scroll[b.dataset.keep] = b.scrollTop; }, true);
+  window.addEventListener("resize", () => { if (app.querySelector('[data-fit="fit"]')) fitBoxes(); });
   let lastHash = location.hash, guardOff = false;
   async function go() {
     if (route.name === "digest" && S.D && location.hash !== lastHash && !guardOff && isDirty()
@@ -1303,25 +1395,25 @@
   document.addEventListener("click", async (ev) => {
     if (ev.target.closest("[data-nogo]")) return;   // a tick-box cell inside a clickable row
     const qf = ev.target.closest("a[data-qf]");   // a count on the Data quality tab: set the Phages tab's filters; the link itself then opens #/
-    if (qf) { const [g, dg] = qf.dataset.qf.split("|"); for (const k in S.filters) S.filters[k] = ""; S.filters.genome = g; S.filters.digest = dg; S.page = 0; return; }
+    if (qf) { const [g, dg] = qf.dataset.qf.split("|"); for (const k in S.filters) S.filters[k] = ""; S.filters.genome = g; S.filters.digest = dg; S.scroll.list = 0; return; }
     const t = ev.target.closest("button, a.btn, th[data-sort], th[data-asort], tr[data-go]");
     if (!t) return;
     if (t.dataset.asort) {
       const [tbl, k] = t.dataset.asort.split(":"), st = tbl === "main" ? S.an : S.an[tbl];
-      st.sort = { k, dir: st.sort.k === k ? -st.sort.dir : TEXT_KEYS.has(k) ? 1 : -1 }; S.an.page = 0; render(); return;
+      st.sort = { k, dir: st.sort.k === k ? -st.sort.dir : TEXT_KEYS.has(k) ? 1 : -1 }; S.scroll.an = 0; render(); return;
     }
     if (t.dataset.adl) { analysisDownload(t.dataset.adl); return; }
     if (t.dataset.act === "queue") { S.an.qask = S.an.sel.size > 0; render(); return; }
     if (t.dataset.act === "queueno") { S.an.qask = false; render(); return; }
     if (t.dataset.act === "queueyes") { queueSelected(); return; }
-    if (t.dataset.sort) { S.sort = { k: t.dataset.sort, dir: S.sort.k === t.dataset.sort ? -S.sort.dir : 1 }; S.page = 0; render(); return; }
-    if (t.dataset.page) { S.page = Math.max(0, S.page + Number(t.dataset.page)); render(); return; }
+    if (t.dataset.sort) { S.sort = { k: t.dataset.sort, dir: S.sort.k === t.dataset.sort ? -S.sort.dir : 1 }; S.scroll.list = 0; render(); return; }
+    if (t.dataset.act === "checknext") {
+      for (const p of listRows()) { const x = (S.digestIndex.get(p.phage_id) || []).find((d) => !d.results_checked); if (x) { location.hash = `#/phage/${p.phage_id}/digest/${x.restriction_digest_experiment_id}`; return; } }
+      return;
+    }
     if (t.dataset.act === "recompute") { if (!S.an.busy) recomputeVirtual(); return; }
     if (t.dataset.act === "seqcand") { Object.assign(S.an, { show: "blocked", min: "3", seq: "no", sort: { k: "blocked", dir: -1 }, enz: "", q: "", host: "", page: 0 }); render(); return; }
-    if (t.dataset.anpage) { S.an.page = Math.max(0, S.an.page + Number(t.dataset.anpage)); render();
-      // Stay with the phage table: the top pager has not moved; after the bottom pager, bring the start of the table back into view (not the top of the page, which is Figure 1)
-      const h = document.getElementById("anphages"); if (h && h.getBoundingClientRect().top < 0) h.scrollIntoView(); return; }
-    if (t.dataset.act === "clearfilters") { for (const k in S.filters) S.filters[k] = ""; S.page = 0; render(); return; }
+    if (t.dataset.act === "clearfilters") { for (const k in S.filters) S.filters[k] = ""; S.scroll.list = 0; render(); return; }
     if (t.id === "signout") { await sb.auth.signOut(); S.user = null; S.role = null; S.catalog = []; S.phage = null; S.D = null; render(); return; }
     if (t.dataset.go) { location.hash = t.dataset.go; return; }
     if (t.dataset.presetdel !== undefined) { if (t.dataset.yes) await deletePreset(t.dataset.presetdel); else S.presetDel = t.dataset.presetdel || null; render(); return; }
@@ -1356,6 +1448,7 @@
     if (!D) return;
     if (t.dataset.act === "save") { save(); return; }
     if (t.dataset.act === "savenext") { saveAndNext(); return; }
+    if (t.dataset.act === "topo") { setTopology(!!t.dataset.circ); return; }
     if (t.dataset.act === "cancel") { guardOff = true; S.D = null; S.msg = ""; location.hash = `#/phage/${S.phage.phage_id}`; return; }   // Cancel is the answer, so no second question
     if (t.dataset.act === "del") { D.delAsk = true; render(); return; }
     if (t.dataset.act === "delno") { D.delAsk = false; render(); return; }
@@ -1385,9 +1478,9 @@
   });
   document.addEventListener("change", async (ev) => {
     const t = ev.target, D = S.D;
-    if (t.id === "pagesize") { S.pageSize = Number(t.value) || 25; S.page = 0; render(); return; }
-    if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.page = 0; render(); return; }
-    if (t.dataset.an && t.tagName === "SELECT") { setPath(S.an, t.dataset.an, t.value); S.an.page = 0; if (t.dataset.an === "chk") buildAnalysis(); render(); return; }
+    if (t.dataset.lrows !== undefined) { S.rows = t.value; render(); return; }
+    if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.scroll.list = 0; render(); return; }
+    if (t.dataset.an && t.tagName === "SELECT") { setPath(S.an, t.dataset.an, t.value); S.scroll.an = 0; if (t.dataset.an === "chk") buildAnalysis(); render(); return; }
     if (t.dataset.asel) { if (t.checked) S.an.sel.add(t.dataset.asel); else S.an.sel.delete(t.dataset.asel); S.an.qask = false; render(); return; }
     if (t.dataset.aselall !== undefined) { for (const id of S.an.shownIds) { if (t.checked) S.an.sel.add(id); else S.an.sel.delete(id); } S.an.qask = false; render(); return; }
     if (t.dataset.acheck) { S.an[t.dataset.acheck] = t.checked; render(); return; }
@@ -1442,7 +1535,7 @@
     document.addEventListener("pointermove", move); document.addEventListener("pointerup", up);
   });
   document.addEventListener("input", (ev) => {
-    if (ev.target.dataset && ev.target.dataset.lf && ev.target.tagName === "INPUT") { S.filters[ev.target.dataset.lf] = ev.target.value; S.page = 0; render(); }
+    if (ev.target.dataset && ev.target.dataset.lf && ev.target.tagName === "INPUT") { S.filters[ev.target.dataset.lf] = ev.target.value; S.scroll.list = 0; render(); }
     else if (ev.target.dataset && ev.target.dataset.f && S.D) S.D[ev.target.dataset.f] = ev.target.value;
   });
   document.addEventListener("toggle", (ev) => { const k = ev.target.dataset && ev.target.dataset.sec; if (k) S.open[k] = ev.target.open; }, true);
@@ -1458,7 +1551,7 @@
   document.addEventListener("input", (ev) => {
     const t = ev.target;
     if (!t.dataset || !t.dataset.ain) return;
-    setPath(S.an, t.dataset.ain, t.value); S.an.page = 0; const pos = t.selectionStart, path = t.dataset.ain; render();
+    setPath(S.an, t.dataset.ain, t.value); S.scroll.an = 0; const pos = t.selectionStart, path = t.dataset.ain; render();
     const f = app.querySelector(`input[data-ain="${path}"]`); if (f) { f.focus(); try { f.setSelectionRange(pos, pos); } catch (err) { /* not a text field */ } }
   });
   window.addEventListener("hashchange", go);

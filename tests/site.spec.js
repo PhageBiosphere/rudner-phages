@@ -157,7 +157,7 @@ test.describe("Digest page", () => {
     await expect(page.locator(".note.warn")).toContainText("No virtual digest yet");
     const fasta = ">test genome\n" + "ACGT".repeat(300) + "GGATCC" + "ACGT".repeat(300) + "\n";
     await page.setInputFiles("[data-genomeup]", { name: "p08.fasta", mimeType: "text/plain", buffer: Buffer.from(fasta) });
-    await expect(page.locator(".card > p.sub").first()).toContainText("Genome uploaded by the lab");
+    await expect(page.locator(".card > p.sub").first()).toContainText("Temporary genome uploaded on this site");
     await expect(page.locator("table.results tbody tr").nth(1).locator("td").first()).toContainText("1 cut");   // BamHI
     expect(await page.evaluate(() => [...window.__FILES__.keys()])).toEqual(["genome-fasta/p08.fasta"]);
   });
@@ -339,32 +339,108 @@ test.describe("Data quality tab", () => {
   });
 });
 
-test.describe("Analysis paging", () => {
-  test("Next under the figures keeps the phage table in view instead of jumping to Figure 1", async ({ page }) => {
-    await page.setViewportSize({ width: 1200, height: 600 });
+test.describe("Scrolling tables", () => {
+  test("the Phages tab lists every phage in a box ten rows tall, with no page buttons", async ({ page }) => {
+    await open(page, "#/");
+    await expect(page.locator("table.list tbody tr")).toHaveCount(12);
+    await expect(page.locator("button[data-page]")).toHaveCount(0);
+    await expect(page.locator(".pager")).toContainText("12 of 12 phages");
+    const m = () => page.evaluate(() => { const b = document.querySelector(".listbox"), t = b.querySelector("table"); return { box: b.clientHeight, head: t.tHead.offsetHeight, row: t.tBodies[0].rows[0].offsetHeight, scrolls: b.scrollHeight > b.clientHeight + 4, top: getComputedStyle(t.tHead.rows[0].cells[0]).position }; });
+    let x = await m();
+    expect(Math.abs(x.box - (x.head + 10 * x.row))).toBeLessThan(6);
+    expect(x.scrolls).toBe(true);
+    expect(x.top).toBe("sticky");
+    await page.selectOption("select[data-lrows]", "20");
+    x = await m();
+    expect(x.scrolls).toBe(false);                      // twelve phages fit in twenty rows
+    await page.selectOption("select[data-lrows]", "fit");
+    await expect(page.locator(".listbox")).toBeVisible();
+  });
+
+  test("one search box finds a phage by name, lab ID, host or cluster", async ({ page }) => {
+    await open(page, "#/");
+    const p = await db(page, "D.phage_catalog_public[5]");
+    await page.fill('input[data-lf="q"]', p.phage_name.toUpperCase());
+    await expect(page.locator("table.list tbody tr")).toHaveCount(1);
+    await expect(page.locator('input[data-lf="q"]')).toBeFocused();
+    await page.fill('input[data-lf="q"]', "AZ1");                                    // a subcluster
+    const n = await db(page, "D.phage_catalog_public.filter((x) => x.phagesdb_subcluster === 'AZ1').length");
+    await expect(page.locator("table.list tbody tr")).toHaveCount(n);
+    await page.click('[data-act="clearfilters"]');
+    await expect(page.locator("table.list tbody tr")).toHaveCount(12);
+  });
+
+  test("filters, sort order and scroll position are kept when coming back from a phage", async ({ page }) => {
+    await open(page, "#/");
+    await page.fill('input[data-lf="strain"]', "");            // twelve phages, two more than the box shows
+    await page.locator("th[data-sort]").first().click();
+    const order = await cells(page.locator("table.list tbody tr td:first-child"));
+    await page.evaluate(() => { const b = document.querySelector(".listbox"); b.scrollTop = 40; b.dispatchEvent(new Event("scroll")); });
+    expect(await page.evaluate(() => document.querySelector(".listbox").scrollTop)).toBe(40);
+    await page.locator("table.list tbody tr").nth(5).locator("td").nth(2).click();
+    await expect(page.locator(".phead")).toBeVisible();
+    await page.goBack();
+    await expect(page.locator("table.list tbody tr")).toHaveCount(12);
+    expect(await cells(page.locator("table.list tbody tr td:first-child"))).toEqual(order);
+    expect(await page.evaluate(() => document.querySelector(".listbox").scrollTop)).toBe(40);
+    // the filters and sort order are also remembered in the browser for the next visit
+    await page.selectOption('select[data-lf="digest"]', "tocheck");
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("rudner.phages")));
+    expect(saved.filters.digest).toBe("tocheck");
+    expect(saved.sort).toEqual({ k: "name", dir: -1 });
+    expect(saved.rows).toBe("10");
+  });
+
+  test("Check next digest opens the first one in the list that needs checking", async ({ page }) => {
+    await open(page, "#/");
+    await page.locator("th[data-sort]").first().click();   // names Z to A
+    const first = await page.evaluate(() => [...document.querySelectorAll("table.list tbody tr")].map((r) => r.dataset.go.split("/").pop()).find((id) => (window.__DB__.restriction_digest_experiments.some((e) => e.phage_id === id && !e.results_checked))));
+    await expect(page.locator(".pager")).toContainText("10 to check in this list");
+    await page.click('[data-act="checknext"]');
+    await expect(page).toHaveURL(new RegExp(`#/phage/${first}/digest/x${first}$`));
+  });
+
+  test("a PhagesDB link in the list opens a new tab without opening the phage", async ({ page, context }) => {
+    await open(page, "#/");
+    const link = page.locator("table.list tbody tr").first().locator("a.pdbx");
+    await expect(link).toHaveAttribute("href", /^https:\/\/phagesdb\.org\/phages\/.+\/$/);
+    await context.route("https://phagesdb.org/**", (r) => r.fulfill({ status: 200, contentType: "text/html", body: "<title>stub</title>" }));
+    const [popup] = await Promise.all([context.waitForEvent("page"), link.click()]);
+    await popup.close();
+    await expect(page).toHaveURL(/#\/$/);                  // still on the list
+  });
+
+  test("the Analysis table shows every phage in one scrolling box", async ({ page }) => {
     await open(page, "#/analysis");
     await page.waitForSelector("table.main");
-    // five rows a page, so the made-up phages fill more than one page
-    await page.evaluate(() => { const s = document.querySelector('select[data-an="size"]'); s.options[0].value = "5"; s.value = "5"; s.dispatchEvent(new Event("change", { bubbles: true })); });
-    await expect(page.locator("table.main tbody tr")).toHaveCount(5);
-    const first = await page.locator("table.main tbody tr td.nm").first().innerText();
-    // the pager just under Figure 4
-    const top = page.locator(".pager").first().locator('button[data-anpage="1"]');
-    await top.scrollIntoViewIfNeeded();
+    await expect(page.locator("button[data-anpage]")).toHaveCount(0);
+    const n = await page.locator("table.main tbody tr").count();
+    await expect(page.locator(".pager")).toContainText(`${n} of ${n} phages with results`);
+    await page.selectOption('select[data-an="size"]', "10");
+    const x = await page.evaluate(() => { const b = document.querySelector(".tablescroll.tall"), t = b.querySelector("table"); return { box: b.clientHeight, want: t.tHead.offsetHeight + 10 * t.tBodies[0].rows[0].offsetHeight, scrolls: b.scrollHeight > b.clientHeight + 4 }; });
+    expect(Math.abs(x.box - x.want)).toBeLessThan(6);
+    expect(x.scrolls).toBe(true);
+    await page.locator('th[data-asort="main:blocked"]').scrollIntoViewIfNeeded();
     const before = await page.evaluate(() => window.scrollY);
     expect(before).toBeGreaterThan(200);
-    await top.click();
-    await expect(page.locator("table.main tbody tr td.nm").first()).not.toHaveText(first);
+    await page.locator('th[data-asort="main:blocked"]').click();      // sorting does not move the page
     expect(Math.abs((await page.evaluate(() => window.scrollY)) - before)).toBeLessThan(5);
-    // the pager under the table: the start of the table comes back into view
-    const bottom = page.locator(".pager").last().locator('button[data-anpage="-1"]');
-    await bottom.scrollIntoViewIfNeeded();
-    await bottom.click();
-    await expect(page.locator("table.main tbody tr td.nm").first()).toHaveText(first);
-    const y = await page.evaluate(() => ({ y: window.scrollY, h: document.getElementById("anphages").getBoundingClientRect().top }));
-    expect(y.y).toBeGreaterThan(200);
-    expect(y.h).toBeGreaterThanOrEqual(0);
-    expect(y.h).toBeLessThan(600);
+  });
+
+  test("the phage page says where the genome sequence comes from", async ({ page }) => {
+    await open(page, "#/");
+    await page.evaluate(() => {
+      window.__DB__.phage_workflow_status_public.push({ phage_id: "p02", selected_assembly_id: "asm-2", assembly_label: "Flye + Medaka (pipeline)", fasta_download_url: null, circularized: false });
+      window.__FILES__.set("genome-fasta/assemblies/asm-2.fasta", ">g\nACGT\n");
+      window.__FILES__.set("genome-fasta/p08.fasta", ">t\nACGT\n");
+    });
+    const go = (id) => page.evaluate((h) => { location.hash = h; }, `#/phage/${id}`);
+    await go("p02");
+    await expect(page.locator("p.gsrc")).toContainText("Rudner Lab database: Flye + Medaka (pipeline), linear");
+    await go("p08");
+    await expect(page.locator("p.gsrc")).toContainText("temporary upload on this site");
+    await go("p05");
+    await expect(page.locator("p.gsrc")).toContainText(/PhagesDB|none recorded/);
   });
 });
 
@@ -393,3 +469,97 @@ test.describe("Digest page: enzyme list", () => {
   });
 });
 
+test.describe("Genome upload and checking order", () => {
+  test("an uploaded genome can be marked circular, and a protein file is refused", async ({ page }) => {
+    await open(page, "#/phage/p08/digest/xp08");
+    await page.waitForSelector("table.results");
+    const protein = ">gp1 capsid\n" + "MKTLLEDFQRWSPIVHYNAG".repeat(80) + "\n";
+    await page.setInputFiles("[data-genomeup]", { name: "proteins.faa.txt", mimeType: "text/plain", buffer: Buffer.from(protein) });
+    await expect(page.locator(".msg").first()).toContainText("looks like protein");
+    expect(await page.evaluate(() => window.__FILES__.size)).toBe(0);
+    const fasta = ">test genome\n" + "ACGT".repeat(300) + "GGATCC" + "ACGT".repeat(300) + "\n";
+    await page.setInputFiles("[data-genomeup]", { name: "p08.fasta", mimeType: "text/plain", buffer: Buffer.from(fasta) });
+    const line = page.locator(".card > p.sub").first();
+    await expect(line).toContainText("linear");
+    await page.click('[data-act="topo"]');
+    await expect(line).toContainText("circular.");
+    await expect(page.locator('[data-act="topo"]')).toHaveText("Change to linear");
+    expect(await page.evaluate(() => window.__FILES__.get("genome-fasta/p08.fasta").split("\n")[0])).toBe(">test genome topology=circular");
+    await page.click('[data-act="topo"]');
+    await expect(line).toContainText("linear.");
+    expect(await page.evaluate(() => window.__FILES__.get("genome-fasta/p08.fasta").split("\n")[0])).toBe(">test genome topology=linear");
+  });
+
+  test("a header that says circular is read on upload", async ({ page }) => {
+    await open(page, "#/phage/p08/digest/xp08");
+    await page.waitForSelector("table.results");
+    const fasta = ">contig_1 length=2406 circular=true\n" + "ACGT".repeat(300) + "GGATCC" + "ACGT".repeat(300) + "\n";
+    await page.setInputFiles("[data-genomeup]", { name: "p08.fasta", mimeType: "text/plain", buffer: Buffer.from(fasta) });
+    await expect(page.locator(".card > p.sub").first()).toContainText("circular.");
+  });
+
+  test("Checked: save and next follows the order and filters of the Phages tab", async ({ page }) => {
+    await open(page, "#/");
+    await page.selectOption('select[data-lf="digest"]', "tocheck");
+    await page.locator("th[data-sort]").first().click();   // the list starts sorted by name; one click reverses it
+    const ids = await page.evaluate(() => [...document.querySelectorAll("table.list tbody tr")].map((r) => r.dataset.go.split("/").pop()));
+    expect(ids.length).toBe(10);
+    expect(ids).not.toEqual(ids.slice().sort());            // not the order of the catalogue
+    await page.locator("table.list tbody tr").first().click();
+    await page.locator('a.btn, button', { hasText: "Edit" }).first().click();
+    await page.waitForSelector(".savebar");
+    await page.click('[data-act="savenext"]');
+    await expect(page).toHaveURL(new RegExp(`#/phage/${ids[1]}/digest/x${ids[1]}$`));
+    await page.click('[data-act="savenext"]');
+    await expect(page).toHaveURL(new RegExp(`#/phage/${ids[2]}/digest/x${ids[2]}$`));
+  });
+
+  test("the digest count and its 'to check' label share one line", async ({ page }) => {
+    await open(page, "#/");
+    const ws = await page.locator("table.list tbody tr").nth(1).locator("td").last().evaluate((td) => getComputedStyle(td).whiteSpace);
+    expect(ws).toBe("nowrap");
+  });
+});
+
+test.describe("Genome from the lab database", () => {
+  test("the selected assembly's stored sequence is used before a temporary upload, with the assembly's topology", async ({ page }) => {
+    await open(page, "#/");
+    const genome = ">p08 annotated genome\n" + "ACGT".repeat(300) + "GGATCC" + "ACGT".repeat(300) + "\n";
+    await page.evaluate((g) => {
+      window.__DB__.phage_workflow_status_public.push({ phage_id: "p08", selected_assembly_id: "asm-8", assembly_label: "Flye + Medaka (pipeline)", assembly_sha256: "abc", fasta_download_url: null, circularized: true });
+      window.__FILES__.set("genome-fasta/assemblies/asm-8.fasta", g);
+      window.__FILES__.set("genome-fasta/p08.fasta", ">old temporary upload\n" + "A".repeat(1500) + "\n");
+    }, genome);
+    await page.evaluate(() => { location.hash = "#/phage/p08/digest/xp08"; });
+    await page.waitForSelector("table.results");
+    const line = page.locator(".card > p.sub").first();
+    await expect(line).toContainText("Flye + Medaka (pipeline)");
+    await expect(line).toContainText("2,406 bp");
+    await expect(line).toContainText("circular.");
+    await expect(page.locator("table.results tbody tr").nth(1).locator("td").first()).toContainText("1 cut");   // BamHI
+    await expect(page.locator("[data-genomeup]")).toHaveCount(0);     // no stopgap upload once the database's copy is in use
+    await expect(page.locator('[data-act="topo"]')).toHaveCount(0);
+  });
+});
+
+test.describe("Phage page title", () => {
+  test("the phage name links to its PhagesDB page, except for Staphylococcus phages", async ({ page }) => {
+    await open(page, "#/");
+    await page.addInitScript(() => { const c = window.__DB__.phage_catalog_public; c[3].host_genus = "Staphylococcus"; c[4].phage_name = "Asiskî"; });
+    await page.reload();
+    await page.waitForSelector("table.list tbody tr");
+    const name = await db(page, "D.phage_catalog_public[2].phage_name");
+    const go = (id) => page.evaluate((h) => { location.hash = h; }, `#/phage/${id}`);
+    await go("p02");
+    const link = page.locator("h2 a.pdb");
+    await expect(link).toHaveAttribute("href", `https://phagesdb.org/phages/${name}/`);
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toContainText(name);
+    await go("p04");
+    await expect(link).toHaveAttribute("href", "https://phagesdb.org/phages/Asiski/");   // the accent is dropped in the address
+    await expect(link).toContainText("Asiskî");
+    await go("p03");
+    await expect(page.locator(".phead h2")).toContainText(await db(page, "D.phage_catalog_public[3].phage_name"));
+    await expect(page.locator("h2 a.pdb")).toHaveCount(0);
+  });
+});

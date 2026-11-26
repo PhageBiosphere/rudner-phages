@@ -26,11 +26,15 @@ The phage page puts the name, ID and host on one row, then a summary line (block
 
 The Analysis page also has **Figure 3** (each combination of blocked enzymes and how many phages show it) and a plot in Figure 2. Its filters are remembered in the browser, and **Copy link to this view** gives an address that opens the same view.
 
-Editors can upload a phage's own genome FASTA from the digest page; it is kept in the private storage bucket `genome-fasta` and used for the virtual digest ahead of the SharePoint file and PhagesDB. Owners can edit an enzyme's sensitivity notes on the Enzyme details page.
+Genomes belong in the Rudner Lab database and are added through the sequencing tracker's pipeline import, which keeps each genome's DNA sequence in the private storage bucket `genome-fasta` as `assemblies/<assembly_id>.fasta`. The site reads the phage's selected assembly from there first. As a stopgap, editors can upload a temporary genome DNA sequence from the digest page (`genome-fasta/<phage_id>.fasta`, marked circular or linear in its header); it is used only by this site, ahead of the SharePoint file and PhagesDB, and is not offered once the database's own copy exists. Owners can edit an enzyme's sensitivity notes on the Enzyme details page.
 
 ## DNA modification gene islands
 
 **Figure 4** on the Analysis page searches every annotated genome (the lab's annotations and the PhagesDB gene lists) for genes of known DNA modification pathways and groups those within 10 kb of each other into islands. The list of marker enzymes is `MOD_MARKERS` in `js/app.js`, with its sources. Each island is set beside the digest call for the same phage. The phage page's summary names the islands of that phage.
+
+## Long tables
+
+The Phages and Analysis tables list every row in one box that scrolls, with the headings fixed; "Rows shown" sets how tall the box is (10, 20, 40 rows, or as tall as the window). There are no pages. The Phages tab remembers its filters, sort order and box height in the browser (`rudner.phages`), and returns to where it was scrolled when you come back from a phage. "Check next digest" and "Checked: save and next" follow that tab's current order and filters.
 
 ## Data quality tab
 

@@ -59,7 +59,12 @@
     storage: { from: (bucket) => ({
       getPublicUrl: (p) => ({ data: { publicUrl: p ? "/data/lambda.fasta?" + p : "" } }),
       upload: async (p, blob) => { files.set(bucket + "/" + p, await blob.text()); return { error: null }; },
-      list: async () => ({ data: [...files.keys()].filter((k) => k.startsWith(bucket + "/")).map((k) => ({ name: k.slice(bucket.length + 1) })), error: null }),
+      list: async (prefix, o) => {   // like the real storage: the names directly inside one folder, a page at a time
+        const base = bucket + "/" + (prefix ? String(prefix).replace(/\/+$/, "") + "/" : ""), names = new Set();
+        for (const k of files.keys()) if (k.startsWith(base)) names.add(k.slice(base.length).split("/")[0]);
+        const off = (o && o.offset) || 0;
+        return { data: [...names].slice(off, off + ((o && o.limit) || 100)).map((name) => ({ name })), error: null };
+      },
       download: async (p) => (files.has(bucket + "/" + p) ? { data: new Blob([files.get(bucket + "/" + p)]), error: null } : { data: null, error: { message: "not found" } }),
       remove: async (ps) => { for (const p of ps) files.delete(bucket + "/" + p); return { error: null }; }
     }) }
