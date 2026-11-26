@@ -28,6 +28,10 @@ The Analysis page also has **Figure 3** (each combination of blocked enzymes and
 
 Editors can upload a phage's own genome FASTA from the digest page; it is kept in the private storage bucket `genome-fasta` and used for the virtual digest ahead of the SharePoint file and PhagesDB. Owners can edit an enzyme's sensitivity notes on the Enzyme details page.
 
+## DNA modification gene islands
+
+**Figure 4** on the Analysis page searches every annotated genome (the lab's annotations and the PhagesDB gene lists) for genes of known DNA modification pathways and groups those within 10 kb of each other into islands. The list of marker enzymes is `MOD_MARKERS` in `js/app.js`, with its sources. Each island is set beside the digest call for the same phage. The phage page's summary names the islands of that phage.
+
 ## Tests
 
 `tests/` holds browser tests that run against a stand-in database (see `tests/README.md`). GitHub runs them on every push.

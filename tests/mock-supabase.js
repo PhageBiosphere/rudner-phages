@@ -5,7 +5,7 @@
     .split(" ").map((x, i) => ({ restriction_enzyme_id: "e" + i, enzyme_name: x.split(":")[0], recognition_sequence: x.split(":")[1], modification_sensitivity: null, diagnostic_group: null, notes: null, active: true }));
   const role = window.__TEST_ROLE__ || "owner";
   const DB = { lab_members: [{ user_id: "u1", role, display_name: "Tester", active: true }], restriction_enzymes: ENZ, phage_catalog_public: [], restriction_digest_experiments: [], restriction_digest_results: [],
-    restriction_enzyme_presets: [{ restriction_enzyme_preset_id: "pre1", preset_name: "GC-rich", lane_layout: ["L", "U", "e0", "e7", "e4"] }], sequencing_requests: [], phage_workflow_status_public: [], phage_genes_public: [] };
+    gene_browse_public: [], restriction_enzyme_presets: [{ restriction_enzyme_preset_id: "pre1", preset_name: "GC-rich", lane_layout: ["L", "U", "e0", "e7", "e4"] }], sequencing_requests: [], phage_workflow_status_public: [], phage_genes_public: [] };
   const hosts = [["Arthrobacter", "globiformis", "B-2880"], ["Mycobacterium", "smegmatis", "mc2155"], ["Streptomyces", "avermitilis", "8165"]];
   const PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";   // a one-pixel picture standing in for a gel
   const gcOnly = (s) => /^[GC]+$/.test(s), atOnly = (s) => /^[AT]+$/.test(s);
@@ -25,6 +25,14 @@
       DB.restriction_digest_results.push({ restriction_digest_result_id: "r" + id + "_" + String(j).padStart(2, "0"), restriction_digest_experiment_id: "x" + id, restriction_enzyme_id: z.restriction_enzyme_id, lane_number: j + 3, observed_result: o, virtual_digest_result: seqd ? "Digestion" : null });
     });
   }
+  // Annotated genes for four phages, to exercise the modification-island search.
+  const gene = (pid, n, start, end, product) => ({ source: "lab", gene_key: `L:${pid}:${n}`, phage_id: pid, gene_number: String(n), start_bp: start, end_bp: end, strand: "+", product });
+  DB.gene_browse_public = [
+    gene("p00", 1, 100, 900, "terminase small subunit"), gene("p00", 7, 5000, 6000, "queuine tRNA-ribosyltransferase"), gene("p00", 8, 6100, 6400, "hypothetical protein"), gene("p00", 9, 6500, 7200, "QueC"), gene("p00", 10, 7300, 8000, "glutamine amidotransferase domain protein"), gene("p00", 30, 30000, 31000, "major capsid protein"),
+    gene("p02", 3, 2000, 2900, "thymidylate synthase"), gene("p02", 5, 4000, 5000, "glycosyltransferase"),
+    gene("p04", 12, 20000, 21200, "DNA methyltransferase"), gene("p04", 13, 21300, 21900, "hypothetical protein"),
+    gene("p08", 2, 1000, 1800, "dCMP hydroxymethylase"), gene("p08", 40, 30000, 31000, "glucosyltransferase"), gene("p08", 41, 31100, 31500, "hypothetical protein")
+  ];
   let n = 0; const copy = (x) => JSON.parse(JSON.stringify(x)), files = new Map();
   function from(t) {
     const st = { f: [], op: "select", single: false, range: null };

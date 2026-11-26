@@ -23,19 +23,19 @@
     sort: { k: "name", dir: 1 }, filters: { name: "", lab: "", host: "", species: "", strain: "", cluster: "", subcluster: "", genome: "", image: "", digest: "" }, pageSize: 25, page: 0,
     control: null,         // {seq, name}
     an: { loaded: false, raw: null, by: new Map(), checked: new Map(), queued: new Set(), sel: new Set(), qask: false, shownIds: [], show: "all", enz: "", q: "", min: "0", seq: "", host: "", chk: "", follow: false,
-      sort: { k: "name", dir: 1 }, size: "25", page: 0, fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, msg: "", busy: false }   // the analysis page
+      sort: { k: "name", dir: 1 }, size: "25", page: 0, fig: "host", f1: { sort: { k: "n", dir: -1 }, f: {} }, f2: { sort: { k: "gc", dir: -1 }, f: {}, size: "10" }, f3: { sort: { k: "n", dir: -1 }, f: {}, size: "15" }, f4: { sort: { k: "ngenes", dir: -1 }, f: {}, size: "15" }, genes: [], isl: new Map(), msg: "", busy: false }   // the analysis page
   };
 
   const GEL_OPT = { numbers: true, names: true, scale: true, height: 300, run: 1, gap: 0, wells: 0 };
   const gelOpt = () => Object.assign({}, GEL_OPT, { ladder: S.D ? S.D.ladder : "" });   // the ladder is the one recorded for this digest
   const AN_KEYS = ["show", "enz", "q", "min", "seq", "host", "chk", "follow", "size", "fig"], okSort = (x) => x && typeof x.k === "string" && (x.dir === 1 || x.dir === -1);
-  const anState = () => { const A = S.an, o = {}; for (const k of AN_KEYS) o[k] = A[k]; o.sort = A.sort; for (const f of ["f1", "f2", "f3"]) o[f] = { sort: A[f].sort, f: A[f].f, size: A[f].size }; return o; };
+  const anState = () => { const A = S.an, o = {}; for (const k of AN_KEYS) o[k] = A[k]; o.sort = A.sort; for (const f of ["f1", "f2", "f3", "f4"]) o[f] = { sort: A[f].sort, f: A[f].f, size: A[f].size }; return o; };
   function anApply(o) {
     if (!o || typeof o !== "object") return;
     const A = S.an;
     for (const k of AN_KEYS) if (k in o && typeof o[k] === typeof A[k]) A[k] = o[k];
     if (okSort(o.sort)) A.sort = { k: o.sort.k, dir: o.sort.dir };
-    for (const f of ["f1", "f2", "f3"]) { const x = o[f]; if (!x || typeof x !== "object") continue; if (okSort(x.sort)) A[f].sort = { k: x.sort.k, dir: x.sort.dir }; if (x.f && typeof x.f === "object") A[f].f = Object.fromEntries(Object.entries(x.f).filter((e) => typeof e[1] === "string")); if (typeof x.size === "string" && A[f].size) A[f].size = x.size; }
+    for (const f of ["f1", "f2", "f3", "f4"]) { const x = o[f]; if (!x || typeof x !== "object") continue; if (okSort(x.sort)) A[f].sort = { k: x.sort.k, dir: x.sort.dir }; if (x.f && typeof x.f === "object") A[f].f = Object.fromEntries(Object.entries(x.f).filter((e) => typeof e[1] === "string")); if (typeof x.size === "string" && A[f].size) A[f].size = x.size; }
     A.page = 0;
   }
   const AN_DEFAULT = JSON.stringify(anState());
@@ -96,8 +96,11 @@
   }
   async function loadPhage(id) {
     S.phage = S.catalog.find((p) => p.phage_id === id) || null;
-    S.digests = []; S.results = []; S.genome = null; S.genes = null;
+    S.digests = []; S.results = []; S.genome = null; S.genes = null; S.pisl = null;
     if (!S.phage) return;
+    sb.from("gene_browse_public").select("source,gene_key,phage_id,gene_number,start_bp,end_bp,strand,product").eq("phage_id", id).range(0, 999).then((g) => {   // optional, arrives a moment later
+      if (!g.error && g.data && g.data.length && S.phage && S.phage.phage_id === id) { S.pisl = findIslands(g.data); if (route.name === "phage") render(); }
+    }, () => {});
     const ex = await sb.from("restriction_digest_experiments").select("*").eq("phage_id", id).order("experiment_date", { ascending: false });
     if (ex.error) throw ex.error;
     S.digests = ex.data || [];
@@ -531,6 +534,9 @@
     S.an.raw = { ex, rs };
     const qr = await sb.from("sequencing_requests").select("phage_id,status").in("status", ["requested", "queued"]);   // optional: who is already waiting to be sequenced
     S.an.queued = new Set(qr.error ? [] : (qr.data || []).map((x) => x.phage_id));
+    // optional: the annotated genes, for the modification-island search
+    try { S.an.genes = await fetchAll("gene_browse_public", "source,gene_key,phage_id,gene_number,start_bp,end_bp,strand,product", "gene_key"); } catch (err) { S.an.genes = []; }
+    buildIslands();
     buildAnalysis(); S.an.loaded = true;
   }
   // The latest result for each enzyme of each phage: phage_id -> Map(enzyme_id -> cell). `keep` can leave digests out.
@@ -656,7 +662,21 @@
     const f3all = [...pm.values()].map((x) => Object.assign(x, { hostText: [...x.hosts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([h, n]) => `${h} (${n})`).join(", ") }));
     const f3 = sorted(f3all.filter((x) => toks.every((t) => x.key.toLowerCase().includes(t)) && x.n >= (Number(F3.minN) || 0) && x.k >= (Number(F3.minK) || 0) && has(x.hostText, F3.host)),
       k3 === "key" ? (x) => x.key.toLowerCase() : k3 === "k" ? (x) => x.k : k3 === "host" ? (x) => x.hostText.toLowerCase() : (x) => x.n, A.f3.sort.dir, (x) => x.key);
-    return { used, all, hosts, rows, base, none, f1, f1total: f1all.length, f2, f3, f3total: f3all.length, unblocked };
+    // figure 4: modification gene islands, set beside the digest call of the same phage
+    const callOf = new Map(all.map((r) => [r.p.phage_id, r])), F4 = A.f4.f, k4 = A.f4.sort.k, f4all = [];
+    let islPhages = 0, geneTotal = 0, unnamed = 0;
+    for (const p of S.catalog) {
+      const I = A.isl.get(p.phage_id); if (!I) continue;
+      geneTotal += I.total; unnamed += I.total - I.named; if (I.islands.length) islPhages += 1;
+      const r = callOf.get(p.phage_id), call = r && (r.gc.n + r.at.n) ? r.call : "";
+      for (const x of I.islands) f4all.push(Object.assign({}, x, { p, name: p.phage_name || "", host: hostOf(p), cluster: p.phagesdb_subcluster || p.phagesdb_cluster || "", call,
+        match: !call || x.cls === "Not stated" ? "" : (call === x.cls || call === "G/C and A/T" && x.cls !== "Not stated" || x.cls === "G/C and A/T" && (call === "G/C" || call === "A/T")) ? "agree" : "differ" }));
+    }
+    const f4 = sorted(f4all.filter((x) => has(x.name, F4.q) && has(x.host, F4.host) && has(x.cluster, F4.cluster) && (!F4.src || x.src === F4.src) && (!F4.kind || x.kind === F4.kind) && (!F4.strength || x.strength === F4.strength) && (!F4.cls || x.cls === F4.cls)
+      && has(x.hits.map(hitLabel).join(" "), F4.gene) && (!F4.call || (F4.call === "any" ? !!x.call : x.match === F4.call))),
+      k4 === "name" ? (x) => x.name.toLowerCase() : k4 === "host" ? (x) => x.host.toLowerCase() : k4 === "cluster" ? (x) => x.cluster.toLowerCase() : k4 === "kind" ? (x) => x.kind : k4 === "src" ? (x) => x.src : k4 === "strength" ? (x) => ["Supporting genes only", "Moderate", "Strong"].indexOf(x.strength)
+        : k4 === "lo" ? (x) => x.lo : k4 === "cls" ? (x) => x.cls : k4 === "call" ? (x) => x.call + x.match : (x) => x.hits.length * 10 + x.hits.filter((h) => h.m.core).length, A.f4.sort.dir, (x) => x.name);
+    return { used, all, hosts, rows, base, none, f1, f1total: f1all.length, f2, f3, f3total: f3all.length, unblocked, f4, f4total: f4all.length, islPhages, annotated: A.isl.size, geneTotal, unnamed };
   }
   function analysisCell(c, first) {
     const g0 = first ? " g0" : "";
@@ -669,7 +689,7 @@
     const k = c.obs === "Digestion" ? ["✓", "ok"] : c.obs === "Partial digestion" ? ["~", "warn"] : c.obs === "No digestion" ? ["✗", "mute"] : ["?", "mute"];
     return `<td class="c ${k[1]}${g0}" title="${esc(tip)}">${k[0]}${mark}</td>`;
   }
-  const TEXT_KEYS = new Set(["name", "id", "host", "cluster", "g", "call", "ev", "key"]);
+  const TEXT_KEYS = new Set(["name", "id", "host", "cluster", "g", "call", "ev", "key", "kind", "cls", "lo", "src"]);
   const sortTh = (tbl, st, k, label, cls, title, extra) => `<th class="${cls || ""}" data-asort="${tbl}:${k}" title="${esc(title || "Sort by this column")}"${extra || ""}>${label} <span class="arrow">${st.sort.k === k ? (st.sort.dir > 0 ? "▲" : "▼") : ""}</span></th>`;
   const shade = (x, title) => (x.n ? `<td class="c" style="background:rgba(21,88,160,${((x.b / x.n) * 0.95).toFixed(2)});color:${x.b / x.n > 0.5 ? "#fff" : "inherit"}" title="${esc(title)}: blocked in ${x.b} of ${x.n} tested (${Math.round((x.b / x.n) * 100)}%)">${x.b}/${x.n}</td>` : '<td class="c mute" title="Not tested">–</td>');
   const selOpt = (v, label, cur) => `<option value="${esc(v)}"${String(cur || "") === String(v) ? " selected" : ""}>${esc(label)}</option>`;
@@ -699,6 +719,89 @@
       ${shown.map((r) => `<tr data-go="#/phage/${r.p.phage_id}"><td><b>${esc(r.name)}</b></td><td>${esc(r.host)}</td><td>${esc(r.cluster)}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td>${shade(r.gc, "G/C-site enzymes").replace('class="c"', 'class="c g0"').replace('class="c mute"', 'class="c mute g0"')}${shade(r.at, "A/T-site enzymes")}${shade(r.both, "Mixed-site enzymes")}<td class="g0">${r.call === "G/C" || r.call === "A/T" || r.call === "G/C and A/T" ? chip(r.call, "warn") : `<span class="sub">${esc(r.call)}</span>`}</td><td class="${/^Weak/.test(r.ev) ? "warn" : ""}">${esc(r.ev)}</td></tr>`).join("") || '<tr><td colspan="9" class="sub">No phage matches these filters.</td></tr>'}
       </tbody></table></div>
       <p class="tiny" style="margin:0 12px 10px"><b>How the call is made.</b> G/C: at least two enzymes whose site is only G and C (${esc(gcNames || "none tested")}) are blocked, and they are at least half of those tested. A/T: at least half of the A/T-only enzymes tested (${esc(atNames || "none tested")}) are blocked. This is a screening rule, not proof. <b>Weak</b>: an A/T call on a phage with no genome sequence, where "not cut" may only mean the genome has no site for the enzyme. <b>Genome-checked</b>: every blocked enzyme has sites in the genome sequence.</p></details>`;
+  }
+  // ---------- DNA modification gene islands ----------
+  // Gene products tied to known phage DNA modification pathways. base: the DNA base the pathway changes ("?" when the product name
+  // does not say). core: specific to DNA modification; the others only support an island and never make one alone.
+  // Sources: Weigele & Raleigh 2016 (doi:10.1021/acs.chemrev.6b00114); Lee et al. 2018 (doi:10.1073/pnas.1714812115);
+  // Hutinet et al. 2019 (doi:10.1038/s41467-019-13384-y); Sleiman et al. 2021 (doi:10.1126/science.abe6494); Czernecki et al. 2021 (doi:10.1038/s41467-021-25064-x).
+  const MOD_MARKERS = [
+    { re: /dcmp hydroxymethyl|deoxycytidylate hydroxymethyl/i, name: "dCMP hydroxymethylase", base: "C", path: "5-hydroxymethylcytosine", core: true },
+    { re: /\bglucosyl ?transferase/i, name: "glucosyltransferase", base: "C", path: "glucosylated hydroxymethylcytosine", core: true },
+    { re: /dctp(ase| pyrophosphatase| diphosphatase)/i, name: "dCTPase", base: "C", path: "5-hydroxymethylcytosine (keeps dCTP out of the DNA)", core: false },
+    { re: /(cytosine|\bdcm\b|c-?5)[^,;]{0,40}(methyl ?transferase|methylase)|(methyl ?transferase|methylase)[^,;]{0,20}(cytosine|\bdcm\b)/i, name: "cytosine methyltransferase", base: "C", path: "methylcytosine", core: true },
+    { re: /(adenine|\bdam\b|n-?6)[^,;]{0,40}(methyl ?transferase|methylase)|(methyl ?transferase|methylase)[^,;]{0,20}(adenine|\bdam\b)/i, name: "adenine methyltransferase", base: "A", path: "N6-methyladenine", core: true },
+    { re: /\bmom\b|momylation/i, name: "Mom", base: "A", path: "N6-carbamoylmethyladenine", core: true },
+    { re: /\bpurz\b|adenylosuccinate synth/i, name: "PurZ-like adenylosuccinate synthetase", base: "A", path: "2-aminoadenine in place of adenine", core: true },
+    { re: /\bdatz\b|datp (triphospho)?hydrolase|\bdatpase\b/i, name: "DatZ dATPase", base: "A", path: "2-aminoadenine in place of adenine", core: true },
+    { re: /\bmaz[gz]\b|(nucleotide|ntp|nucleoside triphosphate) pyrophosphohydrolase/i, name: "MazG-like pyrophosphohydrolase", base: "A", path: "2-aminoadenine (MazZ); also common in other roles", core: false },
+    { re: /\bdpda\d?\b|trna-guanine transglycosylase|queuine trna-ribosyltransferase/i, name: "DpdA / tRNA-guanine transglycosylase homologue", base: "G", path: "7-deazaguanine", core: true },
+    { re: /\bquec\b|7-cyano-7-deazaguanine synth/i, name: "QueC", base: "G", path: "7-deazaguanine", core: true },
+    { re: /\bqued\b|6-carboxy[^,;]{0,14}tetrahydropterin synth/i, name: "QueD", base: "G", path: "7-deazaguanine", core: true },
+    { re: /\bquee\b|7-carboxy-7-deazaguanine synth/i, name: "QueE", base: "G", path: "7-deazaguanine", core: true },
+    { re: /\bquef\b|preq0? reductase|7-cyano-7-deazaguanine reductase/i, name: "QueF", base: "G", path: "7-deazaguanine", core: true },
+    { re: /\bfole\b|gtp cyclohydrolase/i, name: "GTP cyclohydrolase I (FolE)", base: "G", path: "7-deazaguanine (shared with folate synthesis)", core: false },
+    { re: /glutamine amidotransferase|\barcs\b|archaeosine/i, name: "amidotransferase (Gat / ArcS)", base: "G", path: "7-deazaguanine (last steps)", core: false },
+    { re: /dump hydroxymethyl|deoxyuridylate hydroxymethyl|5-?hmdu|hydroxymethyl ?(deoxy)?urid|hydroxymethyluracil/i, name: "dUMP hydroxymethyltransferase / 5-hmdU enzyme", base: "T", path: "hypermodified thymine", core: true },
+    { re: /pplase|putrescinyl|glutamyl.?thymi|thymine pyrophosphorylase/i, name: "aGPT-Pplase", base: "T", path: "hypermodified thymine", core: true },
+    { re: /thymidylate synthase/i, name: "thymidylate synthase", base: "T", path: "hypermodified thymine (the hydroxymethylase is a homologue); also ordinary dTMP synthesis", core: false },
+    { re: /dna[^,;]{0,14}(methyl ?transferase|methylase)|(methyl ?transferase|methylase)[^,;]{0,14}dna|\bmethylase\b/i, name: "DNA methyltransferase", base: "?", path: "DNA methylation (base not stated)", core: true },
+    { re: /methyl ?transferase/i, name: "methyltransferase (target not stated)", base: "?", path: "methylation (may not act on DNA)", core: false },
+    { re: /\bglycosyl ?transferase/i, name: "glycosyltransferase", base: "?", path: "sugar modification (of DNA, or of the cell wall)", core: false }
+  ];
+  const ISLAND_BP = 10000;   // marker genes no further apart than this belong to one island
+  const markerOf = (g) => { const t = `${g.product || ""} ${g.gene_name || ""}`; return MOD_MARKERS.find((m) => m.re.test(t)) || null; };
+  const baseClass = (bases) => { const gc = bases.some((b) => b === "C" || b === "G"), at = bases.some((b) => b === "A" || b === "T"); return gc && at ? "G/C and A/T" : gc ? "G/C" : at ? "A/T" : "Not stated"; };
+  // The islands of one phage: marker genes within ISLAND_BP of each other (two or more), plus any core marker gene standing alone.
+  function findIslands(genes) {
+    const bySrc = new Map(); for (const g of genes) { if (!bySrc.has(g.source)) bySrc.set(g.source, []); bySrc.get(g.source).push(g); }
+    let best = null;
+    for (const [src, list] of bySrc) {
+      const sorted = list.slice().sort((a, b) => (a.start_bp || 0) - (b.start_bp || 0)), hits = sorted.map((g) => ({ g, m: markerOf(g) })).filter((x) => x.m);
+      const core = hits.filter((h) => h.m.core).length;   // where a phage has two annotations, use the one with more core genes; the lab's own on a tie
+      if (!best || core > best.core || (core === best.core && src === "lab")) best = { src, sorted, hits, core };
+    }
+    if (!best) return { src: "", named: 0, total: 0, islands: [] };
+    const groups = []; let cur = [];
+    for (const h of best.hits) { if (cur.length && Math.min(h.g.start_bp, h.g.end_bp) - Math.max(cur[cur.length - 1].g.start_bp, cur[cur.length - 1].g.end_bp) > ISLAND_BP) { groups.push(cur); cur = []; } cur.push(h); }
+    if (cur.length) groups.push(cur);
+    const islands = [];
+    for (const grp of groups) {
+      const core = grp.filter((h) => h.m.core);
+      if (grp.length < 2 && !core.length) continue;
+      const lo = Math.min(...grp.map((h) => Math.min(h.g.start_bp, h.g.end_bp))), hi = Math.max(...grp.map((h) => Math.max(h.g.start_bp, h.g.end_bp)));
+      const bases = [...new Set(core.map((h) => h.m.base).filter((b) => b !== "?"))].sort();   // only core genes say which base is changed
+      islands.push({ src: best.src, kind: grp.length >= 2 ? "Island" : "Single gene", strength: core.length >= 2 ? "Strong" : core.length ? "Moderate" : "Supporting genes only", hits: grp, lo, hi, bases, cls: baseClass(bases),
+        inside: best.sorted.filter((g) => Math.max(g.start_bp, g.end_bp) >= lo && Math.min(g.start_bp, g.end_bp) <= hi) });
+    }
+    return { src: best.src, total: best.sorted.length, named: best.sorted.filter((g) => g.product && !/hypothetical|unknown function/i.test(g.product)).length, islands };
+  }
+  function buildIslands() {
+    const A = S.an, by = new Map();
+    for (const g of A.genes || []) { if (!by.has(g.phage_id)) by.set(g.phage_id, []); by.get(g.phage_id).push(g); }
+    A.isl = new Map([...by].map(([id, genes]) => [id, findIslands(genes)]));
+  }
+  const BASE_COLORS = { C: "#0072B2", G: "#009E73", A: "#D55E00", T: "#E69F00", "?": "#7a7f87" };
+  // A small map of one island: its genes in order, marker genes coloured by the base their pathway changes.
+  function islandMap(x) {
+    const W = 230, H = 22, span = Math.max(1, x.hi - x.lo), X = (bp) => 2 + ((bp - x.lo) / span) * (W - 4);
+    const marks = new Map(x.hits.map((h) => [h.g.gene_key, h.m]));
+    return `<svg class="imap" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg"><line x1="2" y1="${H / 2}" x2="${W - 2}" y2="${H / 2}" stroke="#c9ced6"/>${x.inside.map((g) => { const m = marks.get(g.gene_key), a = X(Math.min(g.start_bp, g.end_bp)), b = X(Math.max(g.start_bp, g.end_bp)); return `<rect x="${a.toFixed(1)}" y="${m ? 3 : 7}" width="${Math.max(1.5, b - a - 0.6).toFixed(1)}" height="${m ? H - 6 : H - 14}" rx="1.5" fill="${m ? BASE_COLORS[m.base] : "#d5d9df"}"${m && !m.core ? ' fill-opacity="0.5"' : ""}><title>${esc(`gene ${g.gene_number || ""}: ${g.product || "no product name"}${m ? ` · ${m.name} · ${m.path}` : ""}`)}</title></rect>`; }).join("")}</svg>`;
+  }
+  const hitLabel = (h) => `${h.m.name}${h.g.gene_number ? ` (gene ${h.g.gene_number})` : ""}`;
+  function figureIslands(M) {
+    const A = S.an, F = A.f4.f, n = A.f4.size === "all" ? M.f4.length : Number(A.f4.size) || 15, shown = M.f4.slice(0, n);
+    const legend = [["C", "cytosine"], ["G", "guanine"], ["A", "adenine"], ["T", "thymine"], ["?", "base not stated"]].map(([b, t]) => `<span class="lg"><i style="background:${BASE_COLORS[b]}"></i>${t}</span>`).join("");
+    return `<details class="sec" data-sec="fig4"${S.open.fig4 === false ? "" : " open"}><summary><b>Figure 4:</b> DNA modification gene islands <span class="sub">(${M.f4.length} of ${M.f4total} found in ${M.islPhages} of ${M.annotated} annotated genomes)</span></summary>
+      <div class="row anbar" style="margin-left:12px"><label class="check">Show <select data-an="f4.size">${["15", "30", "60"].map((v) => selOpt(v, `first ${v}`, A.f4.size)).join("")}${selOpt("all", "all", A.f4.size)}</select></label>
+      <span class="dl">Download: <button class="mini" data-adl="f4.csv">table (CSV)</button><button class="mini" data-adl="f4.png">image</button></span>
+      <span class="sub">An island is two or more modification-related genes within ${fmt(ISLAND_BP / 1000)} kb of each other; a core modification gene standing alone is listed as a single gene. Map: ${legend} · pale = supporting gene · grey = other genes.</span></div>
+      ${M.annotated ? "" : '<p class="sub" style="margin:0 12px 8px">No annotated genome could be read, so there is nothing to search.</p>'}
+      <div class="tablescroll" style="margin:0 12px 6px"><table class="list an fig fig4"><thead><tr>${sortTh("f4", A.f4, "name", "Phage")}${sortTh("f4", A.f4, "host", "Host")}${sortTh("f4", A.f4, "cluster", "Cluster")}${sortTh("f4", A.f4, "src", "Annotation", "", "Which gene list was searched: the lab's own annotation or the PhagesDB one")}${sortTh("f4", A.f4, "kind", "Type", "g0")}${sortTh("f4", A.f4, "strength", "Evidence")}${sortTh("f4", A.f4, "ngenes", "Genes", "c")}${sortTh("f4", A.f4, "lo", "Position")}<th>Map</th><th>Modification genes</th>${sortTh("f4", A.f4, "cls", "Predicted", "g0", "The kind of base the island's pathways change")}${sortTh("f4", A.f4, "call", "Digest call", "", "The likely modification from the restriction digests of the same phage (Figure 2)")}</tr>
+      <tr class="filters"><td><input data-ain="f4.f.q" value="${esc(F.q || "")}" placeholder="filter"></td><td><input data-ain="f4.f.host" value="${esc(F.host || "")}" placeholder="filter"></td><td><input data-ain="f4.f.cluster" value="${esc(F.cluster || "")}" placeholder="filter"></td><td><select data-an="f4.f.src">${selOpt("", "all", F.src)}${selOpt("lab", "lab", F.src)}${selOpt("phagesdb", "PhagesDB", F.src)}</select></td><td><select data-an="f4.f.kind">${selOpt("", "all", F.kind)}${selOpt("Island", "islands", F.kind)}${selOpt("Single gene", "single genes", F.kind)}</select></td><td><select data-an="f4.f.strength">${selOpt("", "all", F.strength)}${["Strong", "Moderate", "Supporting genes only"].map((v) => selOpt(v, v, F.strength)).join("")}</select></td><td></td><td></td><td></td><td><input data-ain="f4.f.gene" value="${esc(F.gene || "")}" placeholder="gene, e.g. methyl"></td><td><select data-an="f4.f.cls">${selOpt("", "all", F.cls)}${["G/C", "A/T", "G/C and A/T", "Not stated"].map((v) => selOpt(v, v, F.cls)).join("")}</select></td><td><select data-an="f4.f.call">${selOpt("", "all", F.call)}${selOpt("any", "has digests", F.call)}${selOpt("agree", "agrees", F.call)}${selOpt("differ", "differs", F.call)}</select></td></tr></thead><tbody>
+      ${shown.map((x) => `<tr data-go="#/phage/${x.p.phage_id}"><td><b>${esc(x.name)}</b></td><td>${esc(x.host)}</td><td>${esc(x.cluster)}</td><td>${x.src === "lab" ? "lab" : "PhagesDB"}</td><td class="g0">${esc(x.kind)}</td><td class="${x.strength === "Strong" ? "ok" : x.strength === "Moderate" ? "" : "sub"}">${esc(x.strength)}</td><td class="c">${x.hits.length}</td><td class="mono">${fmt(x.lo)}–${fmt(x.hi)}</td><td>${islandMap(x)}</td><td>${esc(x.hits.map(hitLabel).join("; "))}</td><td class="g0">${x.cls === "Not stated" ? '<span class="sub">not stated</span>' : chip(x.cls, "warn")}${x.bases.length ? ` <span class="sub">${esc(x.bases.join(", "))}</span>` : ""}</td><td>${!x.call ? '<span class="sub">no digests</span>' : `${esc(x.call)} ${x.match === "agree" ? '<span class="ok" title="The digests point to the same kind of base">✓ agrees</span>' : x.match === "differ" ? '<span class="warn" title="The digests point elsewhere, or show no block">differs</span>' : ""}`}</td></tr>`).join("") || `<tr><td colspan="12" class="sub">${M.f4total ? "No island matches these filters." : "No modification gene was recognised in the annotated genomes."}</td></tr>`}
+      </tbody></table></div>
+      <p class="tiny" style="margin:0 12px 10px"><b>How islands are found.</b> Each gene's product name is compared with a list of enzymes from known phage DNA modification pathways: hydroxymethylcytosine and its glucosylation, DNA methylation, 7-deazaguanine (DpdA, QueC, QueD, QueE, QueF), 2-aminoadenine (PurZ, DatZ, MazZ) and hypermodified thymine (5-hmdU enzymes). Core enzymes are specific to DNA modification; supporting ones (a glycosyltransferase, thymidylate synthase, a MazG-like enzyme) also have everyday roles and count only beside others, and an island made of supporting genes alone gets no predicted base. Where a phage has both a lab annotation and a PhagesDB one, the one with more core genes is used. Genes named "hypothetical protein" cannot be recognised, so an empty result is not proof of absence: ${fmt(M.unnamed)} of ${fmt(M.geneTotal)} genes have no informative name. This is a screen, not proof of a modification.</p></details>`;
   }
   // Figure 2's plot: one dot per phage, share of G/C-site enzymes blocked against share of A/T-site enzymes blocked.
   const GENUS_COLORS = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00"];
@@ -764,7 +867,7 @@
     const fixed = [["name", "Phage", "nm"], ["id", "Rud Lab ID", ""], ["host", "Host", ""], ["cluster", "Cluster", ""], ["genome", "Genome", ""], ["blocked", "Blocked", "c"], ["chk", "Checked", "c"]];
     const allSel = shown.length > 0 && shown.every((r) => A.sel.has(r.p.phage_id));
     const chkCell = (r) => (!r.chk.n ? "" : r.chk.c === r.chk.n ? '<span class="ok" title="Every digest of this phage has been checked against the gel">✓</span>' : r.chk.c ? `<span class="sub">${r.chk.c}/${r.chk.n}</span>` : '<span class="sub" title="Not yet checked against the gel">–</span>');
-    return `<div class="card"><h2>Analysis <span class="sub">restriction enzyme results for every phage</span></h2>${figureGroups(M)}${figureGcAt(M)}${figurePatterns(M)}
+    return `<div class="card"><h2>Analysis <span class="sub">restriction enzyme results for every phage</span></h2>${figureGroups(M)}${figureGcAt(M)}${figurePatterns(M)}${figureIslands(M)}
       <hr class="sep"><h3 style="margin:0 0 4px">Phages</h3>${bar}${pager}
       <div class="tablescroll tall"><table class="list an main"><thead><tr class="r1"><th class="sel" rowspan="2" title="Select every phage on this page"><input type="checkbox" data-aselall${allSel ? " checked" : ""}></th>${fixed.map((c) => sortTh("main", A, c[0], c[1], c[2], "", ' rowspan="2"')).join("")}${groupHead}</tr>
       <tr class="r2">${used.map((z, i) => sortTh("main", A, z.restriction_enzyme_id, esc(z.enzyme_name), "c" + (!i || used[i - 1].grp !== z.grp ? " g0" : ""), z.recognition_sequence || "")).join("")}</tr></thead><tbody>
@@ -800,12 +903,14 @@
     if (what === "f2.csv") return saveCsv([["Phage", "Rud Lab ID", "Host", "Cluster", "Genome bp", "G/C-site enzymes blocked of tested", "A/T-site enzymes blocked of tested", "Mixed-site enzymes blocked of tested", "Likely modified", "Evidence"],
       ...M.f2.map((r) => [r.name, labId(r.p), r.host, r.cluster, r.p.genome_length_bp || "", bn(r.gc), bn(r.at), bn(r.both), r.call, r.ev])], `gc_at_modification_${day}.csv`);
     if (what === "f3.csv") return saveCsv([["Blocked enzymes", "Number blocked", "G/C-site", "A/T-site", "Mixed-site", "Phages", "Hosts (phages)", "Phage names"], ...M.f3.map((x) => [x.key, x.k, x.g.gc, x.g.at, x.g.both, x.n, x.hostText, x.names.join("; ")])], `blocked_enzyme_patterns_${day}.csv`);
+    if (what === "f4.csv") return saveCsv([["Phage", "Rud Lab ID", "Host", "Cluster", "Annotation", "Type", "Evidence", "Marker genes", "Start bp", "End bp", "Modification genes", "Pathways", "Bases", "Predicted", "Digest call", "Digest comparison"],
+      ...M.f4.map((x) => [x.name, labId(x.p), x.host, x.cluster, x.src, x.kind, x.strength, x.hits.length, x.lo, x.hi, x.hits.map(hitLabel).join("; "), [...new Set(x.hits.map((h) => h.m.path))].join("; "), x.bases.join(", "), x.cls, x.call, x.match])], `dna_modification_islands_${day}.csv`);
     if (what === "f2s.png") {
       const svg = app.querySelector("#gcat");
       if (!svg) { A.msg = "Open Figure 2 first, then download its plot."; render(); return; }
       return svgToCanvas(new XMLSerializer().serializeToString(svg), 2).then((c) => c.toBlob((b) => b && saveBlob(b, `gc_at_plot_${day}.png`), "image/png"));
     }
-    const pick = { "f1.png": ["table.fig1", `Blocked enzymes by ${A.fig} (phages blocked / tested) · ${day}`, `blocked_by_${A.fig}_${day}.png`], "f2.png": ["table.fig2", `Phages most likely G/C or A/T modified · ${day}`, `gc_at_modification_${day}.png`], "f3.png": ["table.fig3", `Patterns of blocked enzymes · ${day}`, `blocked_enzyme_patterns_${day}.png`] }[what];
+    const pick = { "f1.png": ["table.fig1", `Blocked enzymes by ${A.fig} (phages blocked / tested) · ${day}`, `blocked_by_${A.fig}_${day}.png`], "f2.png": ["table.fig2", `Phages most likely G/C or A/T modified · ${day}`, `gc_at_modification_${day}.png`], "f3.png": ["table.fig3", `Patterns of blocked enzymes · ${day}`, `blocked_enzyme_patterns_${day}.png`], "f4.png": ["table.fig4", `DNA modification gene islands · ${day}`, `dna_modification_islands_${day}.png`] }[what];
     const tbl = pick && app.querySelector(pick[0]);
     if (!tbl) { A.msg = "Open the figure first, then download its image."; render(); return; }
     tableToCanvas(tbl, pick[1]).toBlob((b) => b && saveBlob(b, pick[2]), "image/png");
@@ -851,12 +956,13 @@
   // One line that sums up what the digests of this phage say.
   function phageSummary() {
     const p = S.phage, m = latestByPhage(S.digests, S.results).get(p.phage_id);
-    if (!m) return "";
+    const isl = S.pisl ? `<br><span class="sub">Modification genes in the annotated genome:</span> ${S.pisl.islands.length ? S.pisl.islands.map((x) => `${esc(x.kind.toLowerCase())} at ${fmt(x.lo)}–${fmt(x.hi)} bp (${esc(x.hits.map((h) => h.m.name).join(", "))}${x.cls === "Not stated" ? "" : `; predicted ${esc(x.cls)}`})`).join("; ") : '<span class="sub">none recognised</span>'}` : "";
+    if (!m) return isl ? `<div class="note psum"><b>Summary.</b> No digest results yet.${isl}</div>` : "";
     const used = usedEnzymes([m]), r = phageRow(p, m, used, { n: S.digests.length, c: S.digests.filter((x) => x.results_checked).length });
     const sens = r.blk.filter((z) => z.modification_sensitivity).map((z) => `${z.enzyme_name}: ${z.modification_sensitivity}`);
     return `<div class="note psum"><b>Summary.</b> ${r.blk.length ? `Blocked: ${r.blk.map((z) => esc(z.enzyme_name)).join(", ")} <span class="sub">(${r.blk.length} of ${r.tested} enzymes tested)</span>` : `No blocked enzyme <span class="sub">(${r.tested} tested)</span>`}
       · Likely modified: ${r.call === "G/C" || r.call === "A/T" || r.call === "G/C and A/T" ? chip(r.call, "warn") : esc(r.call.toLowerCase())}${r.ev ? ` <span class="sub">(${esc(r.ev.toLowerCase())})</span>` : ""}
-      · Checked: ${r.chk.c} of ${r.chk.n} digest${r.chk.n === 1 ? "" : "s"}${sens.length ? `<br><span class="sub">Known sensitivity of the blocked enzymes: ${esc(sens.join("; "))}</span>` : ""}</div>`;
+      · Checked: ${r.chk.c} of ${r.chk.n} digest${r.chk.n === 1 ? "" : "s"}${isl}${sens.length ? `<br><span class="sub">Known sensitivity of the blocked enzymes: ${esc(sens.join("; "))}</span>` : ""}</div>`;
   }
   function viewPhage() {
     const p = S.phage;
@@ -1144,7 +1250,7 @@
       }
       render(); return;
     }
-    if (t.dataset.act === "anreset") { anApply(JSON.parse(AN_DEFAULT)); for (const f of ["f1", "f2", "f3"]) S.an[f].f = {}; S.an.sel = new Set(); S.an.msg = ""; buildAnalysis(); render(); return; }
+    if (t.dataset.act === "anreset") { anApply(JSON.parse(AN_DEFAULT)); for (const f of ["f1", "f2", "f3", "f4"]) S.an[f].f = {}; S.an.sel = new Set(); S.an.msg = ""; buildAnalysis(); render(); return; }
     if (t.dataset.act === "anlink") {
       const url = `${location.origin}${location.pathname}${location.search}#/analysis?v=${encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(anState())))))}`;
       const done = (ok) => { S.an.msg = ok ? "Link copied. Paste it into a message to share this view." : `Copy this address: ${url}`; render(); };

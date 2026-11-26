@@ -230,6 +230,33 @@ test.describe("Analysis tab", () => {
     await page.fill('[data-ain="f3.f.q"]', "DraI");
     await expect(page.locator("table.fig3 tbody tr")).toHaveCount(2);
   });
+  test("Figure 4 finds modification gene islands and sets them beside the digest call", async ({ page }) => {
+    await open(page, "#/analysis");
+    await page.waitForSelector("table.fig4");
+    await expect(page.locator('details[data-sec="fig4"] summary')).toContainText("5 of 5 found in 4 of 4 annotated genomes");
+    const row = (name) => page.locator("table.fig4 tbody tr", { hasText: name });
+    await expect(row("Phage00")).toContainText("Island");
+    await expect(row("Phage00")).toContainText("Strong");
+    await expect(row("Phage00")).toContainText("5,000–8,000");
+    await expect(row("Phage00")).toContainText("DpdA / tRNA-guanine transglycosylase homologue (gene 7); QueC (gene 9); amidotransferase (Gat / ArcS) (gene 10)");
+    await expect(row("Phage00")).toContainText("✓ agrees");
+    await expect(row("Phage00").locator("svg.imap rect")).toHaveCount(4);          // three marker genes and the hypothetical gene between them
+    await expect(row("Phage02")).toContainText("Supporting genes only");
+    await expect(row("Phage02")).toContainText("not stated");                      // supporting genes alone predict no base
+    await expect(row("Phage04")).toContainText("Single gene");
+    await expect(row("Phage08")).toHaveCount(2);                                   // two core genes 28 kb apart are not one island
+    await expect(row("Phage08").first()).toContainText("differs");
+    await page.selectOption('[data-an="f4.f.kind"]', "Island");
+    await expect(page.locator("table.fig4 tbody tr")).toHaveCount(2);
+    await page.selectOption('[data-an="f4.f.kind"]', "");
+    await page.fill('[data-ain="f4.f.gene"]', "methyl");
+    await expect(page.locator("table.fig4 tbody tr")).toHaveCount(2);              // the DNA methyltransferase and the dCMP hydroxymethylase
+  });
+  test("the phage page summary names the phage's modification gene islands", async ({ page }) => {
+    await open(page, "#/phage/p00");
+    await expect(page.locator(".psum")).toContainText("island at 5,000–8,000 bp");
+    await expect(page.locator(".psum")).toContainText("predicted G/C");
+  });
   test("the view is remembered, can be cleared, and can be opened from a copied address", async ({ page, context }) => {
     await open(page, "#/analysis");
     await page.waitForSelector("table.main");
