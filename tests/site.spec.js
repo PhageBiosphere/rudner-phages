@@ -208,7 +208,6 @@ test.describe("Analysis tab", () => {
   test("Figure 2 labels the likely modification and marks weak A/T calls", async ({ page }) => {
     await open(page, "#/analysis");
     await page.waitForSelector("table.fig2");
-    await page.selectOption('[data-an="f2.size"]', "all");
     await page.selectOption('[data-an="f2.f.call"]', "G/C");
     expect((await cells(page.locator("table.fig2 tbody tr td:first-child"))).sort()).toEqual(["Phage00", "Phage01", "Phage02", "Phage03"]);
     await page.selectOption('[data-an="f2.f.call"]', "A/T");
@@ -632,6 +631,96 @@ test.describe("Default order and TIFF images", () => {
     await go("#/phage/p05");                         // one that cannot be fetched says so and links to the original
     await expect(page.locator(".imgbox .note.warn")).toContainText("can't be shown here");
     await expect(page.locator(`.imgbox .note.warn a[href="${PDB}Missing_Digest.tif"]`)).toHaveCount(1);
+  });
+});
+
+test.describe("Figure 2: plot, filter panel and table", () => {
+  const ready = async (page) => { await open(page, "#/analysis"); await page.waitForSelector("table.fig2"); };
+  const dots = (page) => page.locator("#gcat circle[data-pid]");
+
+  test("the table's controls sit under the plot, and the filter panel beside it filters both", async ({ page }) => {
+    await ready(page);
+    const fig = page.locator('details[data-sec="fig2"]');
+    // order on the page: plot, then the Rows shown control, then the table
+    const y = await fig.evaluate((d) => ({ plot: d.querySelector("#gcat").getBoundingClientRect().bottom, rows: d.querySelector('select[data-an="f2.size"]').getBoundingClientRect().top, table: d.querySelector("table.fig2").getBoundingClientRect().top, panelLeft: d.querySelector(".f2panel").getBoundingClientRect().left, plotRight: d.querySelector("#gcat").getBoundingClientRect().right }));
+    expect(y.rows).toBeGreaterThan(y.plot);
+    expect(y.table).toBeGreaterThan(y.rows);
+    expect(y.panelLeft).toBeGreaterThan(y.plotRight);            // the panel uses the space to the right of the plot
+    await expect(fig.locator("table.fig2 tr.filters")).toHaveCount(0);
+    await expect(fig).not.toContainText("Show first");
+    const all = await dots(page).count();
+    expect(all).toBe(11);
+    await expect(fig.locator("table.fig2 tbody tr")).toHaveCount(11);     // every phage is in the table; the box scrolls
+    const host = await db(page, "(() => { const p = D.phage_catalog_public[1]; return [p.host_genus, p.host_species, p.host_strain].filter(Boolean).join(' '); })()");
+    const opts = await page.locator('select[data-an="f2.f.host"] option').allInnerTexts();
+    expect(opts[0]).toBe("all"); expect(opts.length).toBeGreaterThan(2);
+    await page.selectOption('select[data-an="f2.f.host"]', { index: 1 });
+    const n = await fig.locator("table.fig2 tbody tr").count();
+    expect(n).toBeLessThan(11); expect(n).toBeGreaterThan(0);
+    await expect(dots(page)).toHaveCount(n);
+    await expect(fig.locator(".scatter")).toContainText(`the filters leave ${n} of 11 phages`);
+    await expect(fig.locator(".f2panel")).toContainText(`${n} of 11 phages match the filters`);
+    await page.selectOption('select[data-an="f2.f.chk"]', "yes");          // only Phage00 has a checked digest
+    const checked = await cells(fig.locator("table.fig2 tbody tr td:first-child"));
+    expect(checked.every((x) => x === "Phage00")).toBe(true);
+    await page.click('[data-act="f2clear"]');
+    await expect(dots(page)).toHaveCount(11);
+    await expect(page.locator('[data-act="f2clear"]')).toBeDisabled();
+    await page.selectOption('select[data-an="f2.f.chk"]', "yes");
+    await expect(fig.locator("table.fig2 tbody tr")).toHaveCount(1);
+    await expect(fig.locator("table.fig2 tbody tr td").first()).toHaveText("Phage00");
+    await page.selectOption('select[data-an="f2.f.chk"]', "no");
+    await expect(fig.locator("table.fig2 tbody tr")).toHaveCount(10);
+    await page.click('[data-act="f2clear"]');
+    await page.selectOption('select[data-an="f2.f.cluster"]', "AZ");
+    const az = await db(page, "D.phage_catalog_public.filter((p) => p.phagesdb_cluster === 'AZ' && D.restriction_digest_experiments.some((e) => e.phage_id === p.phage_id)).length");
+    await expect(fig.locator("table.fig2 tbody tr")).toHaveCount(az);
+  });
+
+  test("the dots can be coloured by another property, and the choice survives Clear filters", async ({ page }) => {
+    await ready(page);
+    await expect(page.locator("#gcat")).toContainText("Host genus");
+    const fills = async () => new Set(await dots(page).evaluateAll((cs) => cs.map((c) => c.getAttribute("fill"))));
+    const byHost = await fills();
+    await page.selectOption('select[data-an="f2.f.color"]', "call");
+    await expect(page.locator("#gcat")).toContainText("Likely modified");
+    await expect(page.locator("#gcat")).toContainText("G/C (");
+    const byCall = await fills();
+    expect([...byCall].sort()).not.toEqual([...byHost].sort());
+    expect(byCall.has("#0072B2")).toBe(true);                       // the G/C colour
+    await page.selectOption('select[data-an="f2.f.chk"]', "no");
+    await page.click('[data-act="f2clear"]');
+    await expect(page.locator('select[data-an="f2.f.color"]')).toHaveValue("call");
+    await page.selectOption('select[data-an="f2.f.color"]', "chk");
+    await expect(page.locator("#gcat")).toContainText("not yet checked (10)");
+  });
+
+  test("pointing at a row marks its dot, and pointing at a dot marks its row", async ({ page }) => {
+    await ready(page);
+    const row = page.locator("table.fig2 tbody tr").nth(2), pid = await row.getAttribute("data-pid");
+    await row.hover();
+    await expect(page.locator(`#gcat circle[data-pid="${pid}"]`)).toHaveClass(/hl/);
+    await expect(page.locator("#gcat circle.hl")).toHaveCount(1);
+    const last = page.locator("table.fig2 tbody tr").last(), lastPid = await last.getAttribute("data-pid");
+    await page.locator(`#gcat circle[data-pid="${lastPid}"]`).dispatchEvent("mouseover");
+    await expect(last).toHaveClass(/hl/);
+    await expect(page.locator("table.fig2 tr.hl")).toHaveCount(1);
+    const inView = await last.evaluate((r) => { const b = r.closest(".listbox"); return r.offsetTop + r.offsetHeight <= b.scrollTop + b.clientHeight + 1; });
+    expect(inView).toBe(true);                                       // the box scrolled to the row
+    await page.locator("h2").first().hover();
+    await expect(page.locator("#gcat circle.hl, table.fig2 tr.hl")).toHaveCount(0);
+  });
+
+  test("Figures 3 and 4 list every row in a scrolling box", async ({ page }) => {
+    await ready(page);
+    for (const f of ["f3", "f4"]) {
+      const sel = page.locator(`select[data-an="${f}.size"]`);
+      await expect(sel).toHaveValue("15");
+      expect(await sel.locator("option").allInnerTexts()).toEqual(["10", "15", "20", "40", "fit the window"]);
+    }
+    await expect(page.locator('details[data-sec="fig3"] .listbox')).toHaveCount(1);
+    await expect(page.locator('details[data-sec="fig4"] .listbox table.fig4 tbody tr')).toHaveCount(5);
+    for (const f of ["fig3", "fig4"]) await expect(page.locator(`details[data-sec="${f}"]`)).not.toContainText("first 15");
   });
 });
 

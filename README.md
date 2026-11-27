@@ -42,7 +42,7 @@ The Phages tab starts sorted by Rudner Lab ID, newest first.
 
 ## Long tables
 
-The Phages and Analysis tables list every row in one box that scrolls, with the headings fixed; "Rows shown" sets how tall the box is (10, 20, 40 rows, or as tall as the window). There are no pages. The Phages tab remembers its filters, sort order and box height in the browser (`rudner.phages`), and returns to where it was scrolled when you come back from a phage. "Check next digest" and "Checked: save and next" follow that tab's current order and filters.
+The Phages and Analysis tables list every row in one box that scrolls, with the headings fixed; "Rows shown" sets how tall the box is (10, 20, 40 rows, or as tall as the window). There are no pages. The tables of Analysis Figures 2 to 4 work the same way. Figure 2's filters are in a panel beside its plot and apply to both the plot and the table; the panel also sets what the dots are coloured by, and pointing at a row or a dot marks its partner. The Phages tab remembers its filters, sort order and box height in the browser (`rudner.phages`), and returns to where it was scrolled when you come back from a phage. "Check next digest" and "Checked: save and next" follow that tab's current order and filters.
 
 ## Data quality tab
 

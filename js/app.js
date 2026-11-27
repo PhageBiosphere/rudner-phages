@@ -37,6 +37,7 @@
     if (okSort(o.sort)) A.sort = { k: o.sort.k, dir: o.sort.dir };
     for (const f of ["f1", "f2", "f3", "f4"]) { const x = o[f]; if (!x || typeof x !== "object") continue; if (okSort(x.sort)) A[f].sort = { k: x.sort.k, dir: x.sort.dir }; if (x.f && typeof x.f === "object") A[f].f = Object.fromEntries(Object.entries(x.f).filter((e) => typeof e[1] === "string")); if (typeof x.size === "string" && A[f].size) A[f].size = x.size; }
     if (!ROWS_SHOWN.some((r) => r[0] === A.size)) A.size = "20";   // a size remembered from when the table had pages
+    for (const [f, d] of [["f2", "10"], ["f3", "15"], ["f4", "15"]]) if (!ROWS_SHOWN.some((r) => r[0] === A[f].size)) A[f].size = d;
     S.scroll.an = 0;
   }
   const AN_DEFAULT = JSON.stringify(anState());
@@ -804,7 +805,13 @@
       A.f1.sort.k === "g" ? (x) => String(x.g).toLowerCase() : A.f1.sort.k === "n" ? (x) => x.n : A.f1.sort.k === "ge3" ? (x) => x.ge3 : (x) => shareOf(x.cells.get(A.f1.sort.k) || { n: 0, b: 0 }), A.f1.sort.dir, (x) => x.g);
     // figure 2: one row per phage, G/C against A/T
     const F2 = A.f2.f, k2 = A.f2.sort.k;
-    const f2 = sorted(base.filter((r) => has(r.name, F2.q) && has(r.host, F2.host) && has(r.cluster, F2.cluster) && (!F2.seq || (F2.seq === "yes") === !!r.p.genome_length_bp) && (!F2.call || r.call === F2.call) && (!F2.ev || r.ev === F2.ev)),
+    // the choices offered in Figure 2's filter panel; a remembered choice that no longer exists is dropped
+    const f2hosts = [...new Set(base.map((r) => r.host).filter(Boolean))].sort((x, y) => x.localeCompare(y));
+    const f2clusters = [...new Set(base.map((r) => r.p.phagesdb_cluster).filter(Boolean))].sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
+    if (F2.host && !f2hosts.includes(F2.host)) F2.host = "";
+    if (F2.cluster && F2.cluster !== "-" && !f2clusters.includes(F2.cluster)) F2.cluster = "";
+    const f2 = sorted(base.filter((r) => has(r.name, F2.q) && (!F2.host || r.host === F2.host) && (!F2.cluster || (F2.cluster === "-" ? !r.p.phagesdb_cluster : r.p.phagesdb_cluster === F2.cluster))
+      && (!F2.chk || (F2.chk === "yes") === allChecked(r.p.phage_id)) && (!F2.seq || (F2.seq === "yes") === !!r.p.genome_length_bp) && (!F2.call || r.call === F2.call) && (!F2.ev || r.ev === F2.ev)),
       k2 === "name" ? (r) => r.name.toLowerCase() : k2 === "host" ? (r) => r.host.toLowerCase() : k2 === "cluster" ? (r) => r.cluster.toLowerCase() : k2 === "genome" ? (r) => r.p.genome_length_bp || 0
         : k2 === "call" ? (r) => r.call : k2 === "ev" ? (r) => r.ev : (r) => shareOf(r[k2]) * 1000 + r[k2].b, A.f2.sort.dir, (r) => r.name);
     // figure 3: each combination of blocked enzymes, and how many phages show it
@@ -834,7 +841,7 @@
       && has(x.hits.map(hitLabel).join(" "), F4.gene) && (!F4.call || (F4.call === "any" ? !!x.call : x.match === F4.call))),
       k4 === "name" ? (x) => x.name.toLowerCase() : k4 === "host" ? (x) => x.host.toLowerCase() : k4 === "cluster" ? (x) => x.cluster.toLowerCase() : k4 === "kind" ? (x) => x.kind : k4 === "src" ? (x) => x.src : k4 === "strength" ? (x) => ["Supporting genes only", "Moderate", "Strong"].indexOf(x.strength)
         : k4 === "lo" ? (x) => x.lo : k4 === "cls" ? (x) => x.cls : k4 === "call" ? (x) => x.call + x.match : (x) => x.hits.length * 10 + x.hits.filter((h) => h.m.core).length, A.f4.sort.dir, (x) => x.name);
-    return { used, all, hosts, rows, base, none, f1, f1total: f1all.length, f2, f3, f3total: f3all.length, unblocked, f4, f4total: f4all.length, islPhages, annotated: A.isl.size, geneTotal, unnamed };
+    return { used, all, hosts, rows, base, none, f2hosts, f2clusters, f1, f1total: f1all.length, f2, f3, f3total: f3all.length, unblocked, f4, f4total: f4all.length, islPhages, annotated: A.isl.size, geneTotal, unnamed };
   }
   function analysisCell(c, first) {
     const g0 = first ? " g0" : "";
@@ -864,17 +871,29 @@
   }
   const CALLS2 = ["G/C", "A/T", "G/C and A/T", "Unclear", "None seen", "Not tested"], EVS = ["Genome-checked", "Lab gel only", "Weak: A/T sites unconfirmed"];
   function figureGcAt(M) {
-    const A = S.an, F = A.f2.f, n = A.f2.size === "all" ? M.f2.length : Number(A.f2.size) || 10, shown = M.f2.slice(0, n);
+    const A = S.an, F = A.f2.f, shown = M.f2, by = DOT_FIXED[F.color] ? F.color : "host";
+    const filtered = ["q", "host", "cluster", "seq", "chk", "call", "ev"].some((k) => F[k]);
+    const panel = `<div class="f2panel"><b class="full">Filter the plot and the table</b>
+        <span>Phage</span><input data-ain="f2.f.q" value="${esc(F.q || "")}" placeholder="name">
+        <span>Host</span><select data-an="f2.f.host">${selOpt("", "all", F.host)}${M.f2hosts.map((h) => selOpt(h, h, F.host)).join("")}</select>
+        <span>Cluster</span><select data-an="f2.f.cluster">${selOpt("", "all", F.cluster)}${M.f2clusters.map((c) => selOpt(c, c, F.cluster)).join("")}${selOpt("-", "no cluster", F.cluster)}</select>
+        <span>Genome</span><select data-an="f2.f.seq">${selOpt("", "all", F.seq)}${selOpt("yes", "sequenced", F.seq)}${selOpt("no", "not sequenced", F.seq)}</select>
+        <span>Digests</span><select data-an="f2.f.chk" title="Whether the phage's digest results have been checked">${selOpt("", "all", F.chk)}${selOpt("yes", "checked", F.chk)}${selOpt("no", "not yet checked", F.chk)}</select>
+        <span>Likely modified</span><select data-an="f2.f.call">${selOpt("", "all", F.call)}${CALLS2.map((c) => selOpt(c, c, F.call)).join("")}</select>
+        <span>Evidence</span><select data-an="f2.f.ev">${selOpt("", "all", F.ev)}${EVS.map((c) => selOpt(c, c, F.ev)).join("")}</select>
+        <span class="sep">Colour dots by</span><select class="sep" data-an="f2.f.color">${DOT_COLOURS.map((o) => selOpt(o[0], o[1], by)).join("")}</select>
+        <div class="full row"><button data-act="f2clear"${filtered ? "" : " disabled"}>Clear filters</button><button class="mini" data-adl="f2s.png">Download plot image</button></div>
+        <span class="full sub"><b>${fmt(M.f2.length)}</b> of ${fmt(M.base.length)} phages${filtered ? " match the filters" : ""}.</span></div>`;
     const count = (c) => M.base.filter((r) => r.call === c).length;
     const gcNames = M.used.filter((z) => z.grp === "gc").map((z) => z.enzyme_name).join(", "), atNames = M.used.filter((z) => z.grp === "at").map((z) => z.enzyme_name).join(", ");
     return `<details class="sec" data-sec="fig2"${S.open.fig2 === false ? "" : " open"}><summary><b>Figure 2:</b> phages most likely G/C modified or A/T modified <span class="sub">(G/C ${count("G/C")} · A/T ${count("A/T")} · both ${count("G/C and A/T")} of ${M.base.length} phages)</span></summary>
-      <div class="row anbar" style="margin-left:12px"><label class="check">Show <select data-an="f2.size">${["10", "25", "50", "100"].map((v) => selOpt(v, `first ${v}`, A.f2.size)).join("")}${selOpt("all", "all", A.f2.size)}</select></label>
-      <span class="dl">Download: <button class="mini" data-adl="f2.csv">table (CSV)</button><button class="mini" data-adl="f2.png">table image</button><button class="mini" data-adl="f2s.png">plot image</button></span>
-      <span class="sub">${shown.length} of ${M.f2.length} phages shown. Click a heading to sort, a row to open the phage.</span></div>
-      ${scatterGcAt(M.f2)}
-      <div class="tablescroll" style="margin:0 12px 6px"><table class="list an fig fig2"><thead><tr>${sortTh("f2", A.f2, "name", "Phage")}${sortTh("f2", A.f2, "host", "Host")}${sortTh("f2", A.f2, "cluster", "Cluster")}${sortTh("f2", A.f2, "genome", "Genome")}${sortTh("f2", A.f2, "gc", "G/C sites", "c g0", `Blocked / tested among: ${gcNames || "none tested"}`)}${sortTh("f2", A.f2, "at", "A/T sites", "c", `Blocked / tested among: ${atNames || "none tested"}`)}${sortTh("f2", A.f2, "both", "Mixed sites", "c", "Blocked / tested among enzymes whose site has both G/C and A/T")}${sortTh("f2", A.f2, "call", "Likely modified", "g0")}${sortTh("f2", A.f2, "ev", "Evidence")}</tr>
-      <tr class="filters"><td><input data-ain="f2.f.q" value="${esc(F.q || "")}" placeholder="filter"></td><td><input data-ain="f2.f.host" value="${esc(F.host || "")}" placeholder="filter"></td><td><input data-ain="f2.f.cluster" value="${esc(F.cluster || "")}" placeholder="filter"></td><td><select data-an="f2.f.seq">${selOpt("", "all", F.seq)}${selOpt("yes", "sequenced", F.seq)}${selOpt("no", "not sequenced", F.seq)}</select></td><td></td><td></td><td></td><td><select data-an="f2.f.call">${selOpt("", "all", F.call)}${CALLS2.map((c) => selOpt(c, c, F.call)).join("")}</select></td><td><select data-an="f2.f.ev">${selOpt("", "all", F.ev)}${EVS.map((c) => selOpt(c, c, F.ev)).join("")}</select></td></tr></thead><tbody>
-      ${shown.map((r) => `<tr data-go="#/phage/${r.p.phage_id}"><td><b>${esc(r.name)}</b></td><td>${esc(r.host)}</td><td>${esc(r.cluster)}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td>${shade(r.gc, "G/C-site enzymes").replace('class="c"', 'class="c g0"').replace('class="c mute"', 'class="c mute g0"')}${shade(r.at, "A/T-site enzymes")}${shade(r.both, "Mixed-site enzymes")}<td class="g0">${r.call === "G/C" || r.call === "A/T" || r.call === "G/C and A/T" ? chip(r.call, "warn") : `<span class="sub">${esc(r.call)}</span>`}</td><td class="${/^Weak/.test(r.ev) ? "warn" : ""}">${esc(r.ev)}</td></tr>`).join("") || '<tr><td colspan="9" class="sub">No phage matches these filters.</td></tr>'}
+      <div class="f2top">${scatterGcAt(M.f2, by, M.base.length)}${panel}</div>
+      <div class="row anbar" style="margin-left:12px"><label class="check" title="How tall the table is. Every phage left by the filters is in it; scroll to see the rest.">Rows shown <select data-an="f2.size">${ROWS_SHOWN.map((o) => selOpt(o[0], o[1], A.f2.size)).join("")}</select></label>
+      <span class="sub"><b>${fmt(shown.length)}</b> phage${shown.length === 1 ? "" : "s"} in the table. Click a heading to sort, a row to open the phage.</span>
+      <span class="dl">Download: <button class="mini" data-adl="f2.csv">table (CSV)</button><button class="mini" data-adl="f2.png">table image</button></span></div>
+      <div class="tablescroll listbox" data-fit="${A.f2.size}" data-keep="f2" style="margin:0 12px 6px"><table class="list an fig fig2"><thead><tr>${sortTh("f2", A.f2, "name", "Phage")}${sortTh("f2", A.f2, "host", "Host")}${sortTh("f2", A.f2, "cluster", "Cluster")}${sortTh("f2", A.f2, "genome", "Genome")}${sortTh("f2", A.f2, "gc", "G/C sites", "c g0", `Blocked / tested among: ${gcNames || "none tested"}`)}${sortTh("f2", A.f2, "at", "A/T sites", "c", `Blocked / tested among: ${atNames || "none tested"}`)}${sortTh("f2", A.f2, "both", "Mixed sites", "c", "Blocked / tested among enzymes whose site has both G/C and A/T")}${sortTh("f2", A.f2, "call", "Likely modified", "g0")}${sortTh("f2", A.f2, "ev", "Evidence")}</tr>
+</thead><tbody>
+      ${shown.map((r) => `<tr data-go="#/phage/${r.p.phage_id}" data-pid="${esc(r.p.phage_id)}"><td><b>${esc(r.name)}</b></td><td>${esc(r.host)}</td><td>${esc(r.cluster)}</td><td>${r.p.genome_length_bp ? fmt(r.p.genome_length_bp) + " bp" : '<span class="sub">no sequence</span>'}</td>${shade(r.gc, "G/C-site enzymes").replace('class="c"', 'class="c g0"').replace('class="c mute"', 'class="c mute g0"')}${shade(r.at, "A/T-site enzymes")}${shade(r.both, "Mixed-site enzymes")}<td class="g0">${r.call === "G/C" || r.call === "A/T" || r.call === "G/C and A/T" ? chip(r.call, "warn") : `<span class="sub">${esc(r.call)}</span>`}</td><td class="${/^Weak/.test(r.ev) ? "warn" : ""}">${esc(r.ev)}</td></tr>`).join("") || '<tr><td colspan="9" class="sub">No phage matches these filters.</td></tr>'}
       </tbody></table></div>
       <p class="tiny" style="margin:0 12px 10px"><b>How the call is made.</b> G/C: at least two enzymes whose site is only G and C (${esc(gcNames || "none tested")}) are blocked, and they are at least half of those tested. A/T: at least half of the A/T-only enzymes tested (${esc(atNames || "none tested")}) are blocked. This is a screening rule, not proof. <b>Weak</b>: an A/T call on a phage with no genome sequence, where "not cut" may only mean the genome has no site for the enzyme. <b>Genome-checked</b>: every blocked enzyme has sites in the genome sequence.</p></details>`;
   }
@@ -948,14 +967,14 @@
   }
   const hitLabel = (h) => `${h.m.name}${h.g.gene_number ? ` (gene ${h.g.gene_number})` : ""}`;
   function figureIslands(M) {
-    const A = S.an, F = A.f4.f, n = A.f4.size === "all" ? M.f4.length : Number(A.f4.size) || 15, shown = M.f4.slice(0, n);
+    const A = S.an, F = A.f4.f, shown = M.f4;
     const legend = [["C", "cytosine"], ["G", "guanine"], ["A", "adenine"], ["T", "thymine"], ["?", "base not stated"]].map(([b, t]) => `<span class="lg"><i style="background:${BASE_COLORS[b]}"></i>${t}</span>`).join("");
     return `<details class="sec" data-sec="fig4"${S.open.fig4 === false ? "" : " open"}><summary><b>Figure 4:</b> DNA modification gene islands <span class="sub">(${M.f4.length} of ${M.f4total} found in ${M.islPhages} of ${M.annotated} annotated genomes)</span></summary>
-      <div class="row anbar" style="margin-left:12px"><label class="check">Show <select data-an="f4.size">${["15", "30", "60"].map((v) => selOpt(v, `first ${v}`, A.f4.size)).join("")}${selOpt("all", "all", A.f4.size)}</select></label>
+      <div class="row anbar" style="margin-left:12px"><label class="check" title="How tall the table is. Every row is in it; scroll to see the rest.">Rows shown <select data-an="f4.size">${ROWS_SHOWN.map((o) => selOpt(o[0], o[1], A.f4.size)).join("")}</select></label>
       <span class="dl">Download: <button class="mini" data-adl="f4.csv">table (CSV)</button><button class="mini" data-adl="f4.png">image</button></span>
       <span class="sub">An island is two or more modification-related genes within ${fmt(ISLAND_BP / 1000)} kb of each other; a core modification gene standing alone is listed as a single gene. Map: ${legend} · pale = supporting gene · grey = other genes.</span></div>
       ${M.annotated ? "" : '<p class="sub" style="margin:0 12px 8px">No annotated genome could be read, so there is nothing to search.</p>'}
-      <div class="tablescroll" style="margin:0 12px 6px"><table class="list an fig fig4"><thead><tr>${sortTh("f4", A.f4, "name", "Phage")}${sortTh("f4", A.f4, "host", "Host")}${sortTh("f4", A.f4, "cluster", "Cluster")}${sortTh("f4", A.f4, "src", "Annotation", "", "Which gene list was searched: the lab's own annotation or the PhagesDB one")}${sortTh("f4", A.f4, "kind", "Type", "g0")}${sortTh("f4", A.f4, "strength", "Evidence")}${sortTh("f4", A.f4, "ngenes", "Genes", "c")}${sortTh("f4", A.f4, "lo", "Position")}<th>Map</th><th>Modification genes</th>${sortTh("f4", A.f4, "cls", "Predicted", "g0", "The kind of base the island's pathways change")}${sortTh("f4", A.f4, "call", "Digest call", "", "The likely modification from the restriction digests of the same phage (Figure 2)")}</tr>
+      <div class="tablescroll listbox" data-fit="${A.f4.size}" data-keep="f4" style="margin:0 12px 6px"><table class="list an fig fig4"><thead><tr>${sortTh("f4", A.f4, "name", "Phage")}${sortTh("f4", A.f4, "host", "Host")}${sortTh("f4", A.f4, "cluster", "Cluster")}${sortTh("f4", A.f4, "src", "Annotation", "", "Which gene list was searched: the lab's own annotation or the PhagesDB one")}${sortTh("f4", A.f4, "kind", "Type", "g0")}${sortTh("f4", A.f4, "strength", "Evidence")}${sortTh("f4", A.f4, "ngenes", "Genes", "c")}${sortTh("f4", A.f4, "lo", "Position")}<th>Map</th><th>Modification genes</th>${sortTh("f4", A.f4, "cls", "Predicted", "g0", "The kind of base the island's pathways change")}${sortTh("f4", A.f4, "call", "Digest call", "", "The likely modification from the restriction digests of the same phage (Figure 2)")}</tr>
       <tr class="filters"><td><input data-ain="f4.f.q" value="${esc(F.q || "")}" placeholder="filter"></td><td><input data-ain="f4.f.host" value="${esc(F.host || "")}" placeholder="filter"></td><td><input data-ain="f4.f.cluster" value="${esc(F.cluster || "")}" placeholder="filter"></td><td><select data-an="f4.f.src">${selOpt("", "all", F.src)}${selOpt("lab", "lab", F.src)}${selOpt("phagesdb", "PhagesDB", F.src)}</select></td><td><select data-an="f4.f.kind">${selOpt("", "all", F.kind)}${selOpt("Island", "islands", F.kind)}${selOpt("Single gene", "single genes", F.kind)}</select></td><td><select data-an="f4.f.strength">${selOpt("", "all", F.strength)}${["Strong", "Moderate", "Supporting genes only"].map((v) => selOpt(v, v, F.strength)).join("")}</select></td><td></td><td></td><td></td><td><input data-ain="f4.f.gene" value="${esc(F.gene || "")}" placeholder="gene, e.g. methyl"></td><td><select data-an="f4.f.cls">${selOpt("", "all", F.cls)}${["G/C", "A/T", "G/C and A/T", "Not stated"].map((v) => selOpt(v, v, F.cls)).join("")}</select></td><td><select data-an="f4.f.call">${selOpt("", "all", F.call)}${selOpt("any", "has digests", F.call)}${selOpt("agree", "agrees", F.call)}${selOpt("differ", "differs", F.call)}</select></td></tr></thead><tbody>
       ${shown.map((x) => `<tr data-go="#/phage/${x.p.phage_id}"><td><b>${esc(x.name)}</b></td><td>${esc(x.host)}</td><td>${esc(x.cluster)}</td><td>${x.src === "lab" ? "lab" : "PhagesDB"}</td><td class="g0">${esc(x.kind)}</td><td class="${x.strength === "Strong" ? "ok" : x.strength === "Moderate" ? "" : "sub"}">${esc(x.strength)}</td><td class="c">${x.hits.length}</td><td class="mono">${fmt(x.lo)}–${fmt(x.hi)}</td><td>${islandMap(x)}</td><td>${esc(x.hits.map(hitLabel).join("; "))}</td><td class="g0">${x.cls === "Not stated" ? '<span class="sub">not stated</span>' : chip(x.cls, "warn")}${x.bases.length ? ` <span class="sub">${esc(x.bases.join(", "))}</span>` : ""}</td><td>${!x.call ? '<span class="sub">no digests</span>' : `${esc(x.call)} ${x.match === "agree" ? '<span class="ok" title="The digests point to the same kind of base">✓ agrees</span>' : x.match === "differ" ? '<span class="warn" title="The digests point elsewhere, or show no block">differs</span>' : ""}`}</td></tr>`).join("") || `<tr><td colspan="12" class="sub">${M.f4total ? "No island matches these filters." : "No modification gene was recognised in the annotated genomes."}</td></tr>`}
       </tbody></table></div>
@@ -963,32 +982,45 @@
   }
   // Figure 2's plot: one dot per phage, share of G/C-site enzymes blocked against share of A/T-site enzymes blocked.
   const GENUS_COLORS = ["#0072B2", "#E69F00", "#009E73", "#CC79A7", "#56B4E9", "#D55E00"];
-  function scatterGcAt(rows) {
+  // What the dots of Figure 2 can be coloured by. Fixed colours for fixed categories; hosts take the palette in order of size.
+  const allChecked = (id) => { const c = S.an.checked.get(id); return !!c && c.n > 0 && c.c === c.n; };   // every digest of the phage is marked as checked
+  const DOT_COLOURS = [["host", "host genus"], ["call", "likely modified"], ["ev", "evidence"], ["seq", "sequenced or not"], ["chk", "digest checked or not"]];
+  const DOT_FIXED = {
+    call: { title: "Likely modified", cats: [["G/C", "#0072B2"], ["A/T", "#D55E00"], ["G/C and A/T", "#CC79A7"], ["Unclear", "#E69F00"], ["None seen", "#8a8f98"], ["Not tested", "#c4c8ce"]], key: (r) => r.call },
+    ev: { title: "Evidence", cats: [["Genome-checked", "#009E73"], ["Lab gel only", "#56B4E9"], ["Weak: A/T sites unconfirmed", "#E69F00"]], key: (r) => r.ev },
+    seq: { title: "Genome", cats: [["sequenced", "#0072B2"], ["not sequenced", "#E69F00"]], key: (r) => (r.p.genome_length_bp ? "sequenced" : "not sequenced") },
+    chk: { title: "Digest", cats: [["checked", "#009E73"], ["not yet checked", "#8a8f98"]], key: (r) => (allChecked(r.p.phage_id) ? "checked" : "not yet checked") }
+  };
+  function scatterGcAt(rows, by, total) {
     const pts = rows.filter((r) => r.gc.n && r.at.n), L = 56, T = 12, P = 250, pad = 14;
-    if (!pts.length) return '<p class="sub" style="margin:0 12px 8px">No phage here has been tested with both a G/C-site and an A/T-site enzyme, so there is nothing to plot.</p>';
-    const cnt = new Map(); for (const r of pts) { const g = r.p.host_genus || "(no host)"; cnt.set(g, (cnt.get(g) || 0) + 1); }
-    const genera = [...cnt].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])), col = (g) => { const i = genera.findIndex((x) => x[0] === g); return i >= 0 && i < GENUS_COLORS.length ? GENUS_COLORS[i] : "#8a8f98"; };
+    if (!pts.length) return `<div class="scatter"><p class="sub" style="margin:0 0 8px">${rows.length < total ? "No phage left by the filters" : "No phage here"} has been tested with both a G/C-site and an A/T-site enzyme, so there is nothing to plot.</p></div>`;
+    const fx = DOT_FIXED[by], keyOf = fx ? fx.key : (r) => r.p.host_genus || "(no host)";
+    const cnt = new Map(); for (const r of pts) { const g = keyOf(r); cnt.set(g, (cnt.get(g) || 0) + 1); }
+    // legend entries: [label, colour, count, italic]
+    const genera = [...cnt].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
+    const cats = fx ? fx.cats.filter((c) => cnt.has(c[0])).map((c) => [c[0], c[1], cnt.get(c[0]), false])
+      : genera.slice(0, GENUS_COLORS.length).map((g, i) => [g[0], GENUS_COLORS[i], g[1], true]).concat(genera.length > GENUS_COLORS.length ? [["other hosts", "#8a8f98", genera.slice(GENUS_COLORS.length).reduce((n, x) => n + x[1], 0), false]] : []);
+    const colMap = new Map(cats.map((c) => [c[0], c[1]])), col = (g) => colMap.get(g) || "#8a8f98";
     const jit = (s, salt) => { let h = 2166136261 ^ salt; for (const ch of String(s)) h = Math.imul(h ^ ch.charCodeAt(0), 16777619); h ^= h >>> 13; h = Math.imul(h, 1540483477); h ^= h >>> 15; return ((h >>> 0) / 4294967296 - 0.5) * 0.11; };   // a fixed small nudge per phage
     const X = (v) => L + pad + v * (P - 2 * pad), Y = (v) => T + P - pad - v * (P - 2 * pad);
     const ticks = [0, 0.5, 1].map((v) => `<line x1="${X(v)}" y1="${T}" x2="${X(v)}" y2="${T + P}" stroke="#e3e6ea" stroke-dasharray="${v === 0.5 ? "4 3" : "0"}"/><line x1="${L}" y1="${Y(v)}" x2="${L + P}" y2="${Y(v)}" stroke="#e3e6ea" stroke-dasharray="${v === 0.5 ? "4 3" : "0"}"/><text x="${X(v)}" y="${T + P + 15}" text-anchor="middle">${v * 100}%</text><text x="${L - 7}" y="${Y(v) + 4}" text-anchor="end">${v * 100}%</text>`).join("");
-    const dots = pts.map((r) => `<a href="#/phage/${r.p.phage_id}"><circle cx="${(X(r.gc.b / r.gc.n) + jit(r.p.phage_id, 7) * P).toFixed(1)}" cy="${(Y(r.at.b / r.at.n) + jit(r.p.phage_id, 53) * P).toFixed(1)}" r="3.8" fill="${col(r.p.host_genus || "(no host)")}" fill-opacity="0.72" stroke="#fff" stroke-width="0.7"><title>${esc(r.name)} · ${esc(r.host)} · G/C sites ${r.gc.b}/${r.gc.n} blocked · A/T sites ${r.at.b}/${r.at.n} blocked · ${esc(r.call)}</title></circle></a>`).join("");
-    const legend = genera.slice(0, GENUS_COLORS.length).map(([g, n], i) => `<circle cx="${L + P + 26}" cy="${T + 22 + i * 19}" r="5" fill="${GENUS_COLORS[i]}"/><text x="${L + P + 37}" y="${T + 26 + i * 19}"><tspan font-style="italic">${esc(g)}</tspan> (${n})</text>`).join("")
-      + (genera.length > GENUS_COLORS.length ? `<circle cx="${L + P + 26}" cy="${T + 22 + GENUS_COLORS.length * 19}" r="5" fill="#8a8f98"/><text x="${L + P + 37}" y="${T + 26 + GENUS_COLORS.length * 19}">other hosts (${genera.slice(GENUS_COLORS.length).reduce((a, x) => a + x[1], 0)})</text>` : "");
+    const dots = pts.map((r) => `<a href="#/phage/${r.p.phage_id}"><circle cx="${(X(r.gc.b / r.gc.n) + jit(r.p.phage_id, 7) * P).toFixed(1)}" cy="${(Y(r.at.b / r.at.n) + jit(r.p.phage_id, 53) * P).toFixed(1)}" r="3.8" data-pid="${esc(r.p.phage_id)}" fill="${col(keyOf(r))}" fill-opacity="0.72" stroke="#fff" stroke-width="0.7"><title>${esc(r.name)} · ${esc(r.host)} · G/C sites ${r.gc.b}/${r.gc.n} blocked · A/T sites ${r.at.b}/${r.at.n} blocked · ${esc(r.call)}</title></circle></a>`).join("");
+    const legend = cats.map((c, i) => `<circle cx="${L + P + 26}" cy="${T + 22 + i * 19}" r="5" fill="${c[1]}"/><text x="${L + P + 37}" y="${T + 26 + i * 19}">${c[3] ? `<tspan font-style="italic">${esc(c[0])}</tspan>` : esc(c[0])} (${c[2]})</text>`).join("");
     return `<div class="scatter"><svg id="gcat" xmlns="http://www.w3.org/2000/svg" width="${L + P + 210}" height="${T + P + 44}" viewBox="0 0 ${L + P + 210} ${T + P + 44}" font-family="system-ui,Arial,sans-serif" font-size="11.5" fill="#444">
       <rect x="0" y="0" width="${L + P + 210}" height="${T + P + 44}" fill="#fff"/><rect x="${L}" y="${T}" width="${P}" height="${P}" fill="#fcfcfd" stroke="#c9ced6"/>${ticks}
       <text x="${L + P / 2}" y="${T + P + 34}" text-anchor="middle" font-size="12.5" fill="#202124">G/C-site enzymes blocked (share of those tested)</text>
       <text transform="translate(14 ${T + P / 2}) rotate(-90)" text-anchor="middle" font-size="12.5" fill="#202124">A/T-site enzymes blocked</text>
-      <text x="${L + P + 20}" y="${T + 8}" font-size="12" fill="#202124">Host genus</text>${legend}${dots}</svg>
-      <p class="tiny">${pts.length} phage${pts.length === 1 ? "" : "s"} plotted${rows.length > pts.length ? `; ${rows.length - pts.length} not plotted because no A/T-site (or no G/C-site) enzyme was tested` : ""}. Dots are nudged slightly apart so that phages with the same values can all be seen. Lower right: G/C sites blocked, A/T sites cut. Upper left: the reverse. Hover over a dot for the phage, click to open it.</p></div>`;
+      <text x="${L + P + 20}" y="${T + 8}" font-size="12" fill="#202124">${fx ? fx.title : "Host genus"}</text>${legend}${dots}</svg>
+      <p class="tiny"><b>${pts.length} phage${pts.length === 1 ? "" : "s"} plotted</b>${rows.length < total ? ` (the filters leave ${rows.length} of ${total} phages)` : ""}${rows.length > pts.length ? `; ${rows.length - pts.length} not plotted because no A/T-site (or no G/C-site) enzyme was tested` : ""}. Dots are nudged slightly apart so that phages with the same values can all be seen. Lower right: G/C sites blocked, A/T sites cut. Upper left: the reverse. Hover over a dot for the phage and its row in the table below; click to open it.</p></div>`;
   }
   function figurePatterns(M) {
-    const A = S.an, F = A.f3.f, n = A.f3.size === "all" ? M.f3.length : Number(A.f3.size) || 15, shown = M.f3.slice(0, n);
+    const A = S.an, F = A.f3.f, shown = M.f3;
     const groups = (x) => [x.g.gc ? `${x.g.gc} G/C` : "", x.g.at ? `${x.g.at} A/T` : "", x.g.both ? `${x.g.both} mixed` : ""].filter(Boolean).join(" · ");
     return `<details class="sec" data-sec="fig3"${S.open.fig3 === false ? "" : " open"}><summary><b>Figure 3:</b> patterns of blocked enzymes <span class="sub">(${M.f3.length} of ${M.f3total} pattern${M.f3total === 1 ? "" : "s"})</span></summary>
-      <div class="row anbar" style="margin-left:12px"><label class="check">Show <select data-an="f3.size">${["15", "30", "60"].map((v) => selOpt(v, `first ${v}`, A.f3.size)).join("")}${selOpt("all", "all", A.f3.size)}</select></label>
+      <div class="row anbar" style="margin-left:12px"><label class="check" title="How tall the table is. Every row is in it; scroll to see the rest.">Rows shown <select data-an="f3.size">${ROWS_SHOWN.map((o) => selOpt(o[0], o[1], A.f3.size)).join("")}</select></label>
       <span class="dl">Download: <button class="mini" data-adl="f3.csv">table (CSV)</button><button class="mini" data-adl="f3.png">image</button></span>
       <span class="sub">Each row is one combination of blocked enzymes and the phages that show exactly that combination. ${fmt(M.unblocked)} phage${M.unblocked === 1 ? " has" : "s have"} no blocked enzyme. A pattern also depends on which enzymes were tested.</span></div>
-      <div class="tablescroll" style="margin:0 12px 10px"><table class="list an fig fig3"><thead><tr>${sortTh("f3", A.f3, "key", "Blocked enzymes")}${sortTh("f3", A.f3, "k", "Number", "c", "How many enzymes are blocked in this pattern")}<th>Site groups</th>${sortTh("f3", A.f3, "n", "Phages", "c g0")}${sortTh("f3", A.f3, "host", "Hosts (phages)")}</tr>
+      <div class="tablescroll listbox" data-fit="${A.f3.size}" data-keep="f3" style="margin:0 12px 10px"><table class="list an fig fig3"><thead><tr>${sortTh("f3", A.f3, "key", "Blocked enzymes")}${sortTh("f3", A.f3, "k", "Number", "c", "How many enzymes are blocked in this pattern")}<th>Site groups</th>${sortTh("f3", A.f3, "n", "Phages", "c g0")}${sortTh("f3", A.f3, "host", "Hosts (phages)")}</tr>
       <tr class="filters"><td><input data-ain="f3.f.q" value="${esc(F.q || "")}" placeholder="enzymes, e.g. BamHI SacII"></td><td><input data-ain="f3.f.minK" value="${esc(F.minK || "")}" placeholder="min" inputmode="numeric"></td><td></td><td><input data-ain="f3.f.minN" value="${esc(F.minN || "")}" placeholder="min" inputmode="numeric"></td><td><input data-ain="f3.f.host" value="${esc(F.host || "")}" placeholder="filter"></td></tr></thead><tbody>
       ${shown.map((x) => `<tr title="${esc(x.names.slice(0, 14).join(", "))}${x.names.length > 14 ? " …" : ""}"><td><b>${esc(x.key)}</b></td><td class="c">${x.k}</td><td class="sub">${groups(x)}</td><td class="c g0"><b>${x.n}</b></td><td>${esc(x.hostText)}</td></tr>`).join("") || '<tr><td colspan="5" class="sub">No pattern matches these filters.</td></tr>'}
       </tbody></table></div></details>`;
@@ -1431,6 +1463,21 @@
       const y = S.scroll[box.dataset.keep] || 0; if (y) box.scrollTop = y;
     }
   }
+  // Figure 2: pointing at a row marks its dot, and pointing at a dot marks its row and brings it into view in the table's box
+  let hlPid = null;
+  app.addEventListener("mouseover", (ev) => {
+    const el = ev.target.closest ? ev.target : null, row = el && el.closest("table.fig2 tr[data-pid]"), dot = !row && el && el.closest("#gcat circle[data-pid]");
+    const pid = row ? row.dataset.pid : dot ? dot.dataset.pid : null;
+    if (pid === hlPid) return;
+    for (const x of app.querySelectorAll("#gcat circle.hl, table.fig2 tr.hl")) x.classList.remove("hl");
+    hlPid = pid; if (!pid) return;
+    const q = `[data-pid="${String(pid).replace(/"/g, "")}"]`, c = app.querySelector("#gcat circle" + q), r = app.querySelector("table.fig2 tr" + q);
+    if (c) { c.classList.add("hl"); if (row) c.parentNode.parentNode.appendChild(c.parentNode); }   // from the table: draw the dot on top
+    if (r) {
+      r.classList.add("hl");
+      if (dot) { const box = r.closest(".listbox"), head = box && box.querySelector("thead"); if (box) { const top = r.offsetTop - (head ? head.offsetHeight : 0); if (top < box.scrollTop) box.scrollTop = top; else if (r.offsetTop + r.offsetHeight > box.scrollTop + box.clientHeight) box.scrollTop = r.offsetTop + r.offsetHeight - box.clientHeight; } }
+    }
+  });
   document.addEventListener("scroll", (ev) => { const b = ev.target; if (b && b.dataset && b.dataset.keep) S.scroll[b.dataset.keep] = b.scrollTop; }, true);
   window.addEventListener("resize", () => { if (app.querySelector('[data-fit="fit"]')) fitBoxes(); });
   let lastHash = location.hash, guardOff = false;
@@ -1484,7 +1531,7 @@
     if (!t) return;
     if (t.dataset.asort) {
       const [tbl, k] = t.dataset.asort.split(":"), st = tbl === "main" ? S.an : S.an[tbl];
-      st.sort = { k, dir: st.sort.k === k ? -st.sort.dir : TEXT_KEYS.has(k) ? 1 : -1 }; S.scroll.an = 0; render(); return;
+      st.sort = { k, dir: st.sort.k === k ? -st.sort.dir : TEXT_KEYS.has(k) ? 1 : -1 }; S.scroll.an = S.scroll.f2 = S.scroll.f3 = S.scroll.f4 = 0; render(); return;
     }
     if (t.dataset.adl) { analysisDownload(t.dataset.adl); return; }
     if (t.dataset.act === "queue") { S.an.qask = S.an.sel.size > 0; render(); return; }
@@ -1511,6 +1558,7 @@
       }
       render(); return;
     }
+    if (t.dataset.act === "f2clear") { const keep = S.an.f2.f.color; S.an.f2.f = keep ? { color: keep } : {}; S.scroll.f2 = 0; render(); return; }
     if (t.dataset.act === "anreset") { anApply(JSON.parse(AN_DEFAULT)); for (const f of ["f1", "f2", "f3", "f4"]) S.an[f].f = {}; S.an.sel = new Set(); S.an.msg = ""; buildAnalysis(); render(); return; }
     if (t.dataset.act === "anlink") {
       const url = `${location.origin}${location.pathname}${location.search}#/analysis?v=${encodeURIComponent(btoa(unescape(encodeURIComponent(JSON.stringify(anState())))))}`;
@@ -1564,7 +1612,7 @@
     const t = ev.target, D = S.D;
     if (t.dataset.lrows !== undefined) { S.rows = t.value; render(); return; }
     if (t.dataset.lf && t.tagName === "SELECT") { S.filters[t.dataset.lf] = t.value; S.scroll.list = 0; render(); return; }
-    if (t.dataset.an && t.tagName === "SELECT") { setPath(S.an, t.dataset.an, t.value); S.scroll.an = 0; if (t.dataset.an === "chk") buildAnalysis(); render(); return; }
+    if (t.dataset.an && t.tagName === "SELECT") { setPath(S.an, t.dataset.an, t.value); S.scroll.an = S.scroll.f2 = S.scroll.f3 = S.scroll.f4 = 0; if (t.dataset.an === "chk") buildAnalysis(); render(); return; }
     if (t.dataset.asel) { if (t.checked) S.an.sel.add(t.dataset.asel); else S.an.sel.delete(t.dataset.asel); S.an.qask = false; render(); return; }
     if (t.dataset.aselall !== undefined) { for (const id of S.an.shownIds) { if (t.checked) S.an.sel.add(id); else S.an.sel.delete(id); } S.an.qask = false; render(); return; }
     if (t.dataset.acheck) { S.an[t.dataset.acheck] = t.checked; render(); return; }
@@ -1635,7 +1683,7 @@
   document.addEventListener("input", (ev) => {
     const t = ev.target;
     if (!t.dataset || !t.dataset.ain) return;
-    setPath(S.an, t.dataset.ain, t.value); S.scroll.an = 0; const pos = t.selectionStart, path = t.dataset.ain; render();
+    setPath(S.an, t.dataset.ain, t.value); S.scroll.an = S.scroll.f2 = S.scroll.f3 = S.scroll.f4 = 0; const pos = t.selectionStart, path = t.dataset.ain; render();
     const f = app.querySelector(`input[data-ain="${path}"]`); if (f) { f.focus(); try { f.setSelectionRange(pos, pos); } catch (err) { /* not a text field */ } }
   });
   window.addEventListener("hashchange", go);
