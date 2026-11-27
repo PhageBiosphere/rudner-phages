@@ -180,7 +180,7 @@ a.pdbx:hover{text-decoration:underline}
 p.gsrc{margin:2px 0 8px}
 /* Figure 2: the plot with its filter panel beside it */
 .f2top{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap;margin:0 12px 8px}
-.f2top .scatter{margin:0;flex:0 1 530px;max-width:530px;min-width:0}
+.f2top .scatter{margin:0;flex:0 1 auto;max-width:560px;min-width:0}
 .f2panel{flex:1 1 250px;max-width:360px;display:grid;grid-template-columns:auto 1fr;gap:6px 10px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:#fafbfc;font-size:13px}
 .f2panel .full{grid-column:1/-1}
 .f2panel select,.f2panel input{width:100%;min-width:0;margin:0;box-sizing:border-box}
@@ -188,3 +188,6 @@ p.gsrc{margin:2px 0 8px}
 .f2panel .row{gap:8px;margin:4px 0 0}
 #gcat circle.hl{stroke:#111;stroke-width:2;fill-opacity:1}
 table.fig2 tr.hl,table.fig2 tr.hl:hover{background:#fff3c4}
+.f2panel .on{border-color:var(--blue);background:#eaf2ff;font-weight:600}
+.f2panel .lgd{display:flex;flex-direction:column;gap:3px;font-size:12.5px}
+.f2panel .lgd i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px}

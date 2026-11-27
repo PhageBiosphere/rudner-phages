@@ -659,7 +659,7 @@ test.describe("Figure 2: plot, filter panel and table", () => {
     expect(n).toBeLessThan(11); expect(n).toBeGreaterThan(0);
     await expect(dots(page)).toHaveCount(n);
     await expect(fig.locator(".scatter")).toContainText(`the filters leave ${n} of 11 phages`);
-    await expect(fig.locator(".f2panel")).toContainText(`${n} of 11 phages match the filters`);
+    await expect(fig.locator(".f2panel")).toContainText(`${n} of 11 phages match`);
     await page.selectOption('select[data-an="f2.f.chk"]', "yes");          // only Phage00 has a checked digest
     const checked = await cells(fig.locator("table.fig2 tbody tr td:first-child"));
     expect(checked.every((x) => x === "Phage00")).toBe(true);
@@ -679,12 +679,13 @@ test.describe("Figure 2: plot, filter panel and table", () => {
 
   test("the dots can be coloured by another property, and the choice survives Clear filters", async ({ page }) => {
     await ready(page);
-    await expect(page.locator("#gcat")).toContainText("Host genus");
+    const lgd = page.locator(".f2panel .lgd");
+    await expect(page.locator("#gcat")).not.toContainText("Host genus");            // the legend is in the panel, not in the plot
+    await expect(lgd).toContainText("Arthrobacter");
     const fills = async () => new Set(await dots(page).evaluateAll((cs) => cs.map((c) => c.getAttribute("fill"))));
     const byHost = await fills();
     await page.selectOption('select[data-an="f2.f.color"]', "call");
-    await expect(page.locator("#gcat")).toContainText("Likely modified");
-    await expect(page.locator("#gcat")).toContainText("G/C (");
+    await expect(lgd).toContainText("G/C (4)");
     const byCall = await fills();
     expect([...byCall].sort()).not.toEqual([...byHost].sort());
     expect(byCall.has("#0072B2")).toBe(true);                       // the G/C colour
@@ -692,7 +693,7 @@ test.describe("Figure 2: plot, filter panel and table", () => {
     await page.click('[data-act="f2clear"]');
     await expect(page.locator('select[data-an="f2.f.color"]')).toHaveValue("call");
     await page.selectOption('select[data-an="f2.f.color"]', "chk");
-    await expect(page.locator("#gcat")).toContainText("not yet checked (10)");
+    await expect(lgd).toContainText("not yet checked (10)");
   });
 
   test("pointing at a row marks its dot, and pointing at a dot marks its row", async ({ page }) => {
@@ -702,7 +703,7 @@ test.describe("Figure 2: plot, filter panel and table", () => {
     await expect(page.locator(`#gcat circle[data-pid="${pid}"]`)).toHaveClass(/hl/);
     await expect(page.locator("#gcat circle.hl")).toHaveCount(1);
     const last = page.locator("table.fig2 tbody tr").last(), lastPid = await last.getAttribute("data-pid");
-    await page.locator(`#gcat circle[data-pid="${lastPid}"]`).dispatchEvent("mouseover");
+    await page.locator(`#gcat circle[data-pid="${lastPid}"]`).hover({ force: true });
     await expect(last).toHaveClass(/hl/);
     await expect(page.locator("table.fig2 tr.hl")).toHaveCount(1);
     const inView = await last.evaluate((r) => { const b = r.closest(".listbox"); return r.offsetTop + r.offsetHeight <= b.scrollTop + b.clientHeight + 1; });
@@ -721,6 +722,78 @@ test.describe("Figure 2: plot, filter panel and table", () => {
     await expect(page.locator('details[data-sec="fig3"] .listbox')).toHaveCount(1);
     await expect(page.locator('details[data-sec="fig4"] .listbox table.fig4 tbody tr')).toHaveCount(5);
     for (const f of ["fig3", "fig4"]) await expect(page.locator(`details[data-sec="${f}"]`)).not.toContainText("first 15");
+  });
+});
+
+test.describe("Figure 2: strips, counts and labels", () => {
+  // p07 loses its A/T-site results, p08 its G/C-site results, and p09 keeps only a blocked mixed-site enzyme
+  const reshape = () => {
+    const D = window.__DB__, grp = (z) => (/^[GCS]+$/i.test(z.recognition_sequence) ? "gc" : /^[ATW]+$/i.test(z.recognition_sequence) ? "at" : "both");
+    const g = new Map(D.restriction_enzymes.map((z) => [z.restriction_enzyme_id, grp(z)]));
+    const drop = (pid, kinds) => { D.restriction_digest_results = D.restriction_digest_results.filter((r) => !(r.restriction_digest_experiment_id === "x" + pid && kinds.includes(g.get(r.restriction_enzyme_id)))); };
+    drop("p07", ["at"]); drop("p08", ["gc"]); drop("p09", ["gc", "at"]);
+    const mixed = D.restriction_digest_results.find((r) => r.restriction_digest_experiment_id === "xp09"); mixed.observed_result = "No digestion"; mixed.virtual_result = null;
+  };
+  const ready = async (page) => { await open(page, "#/"); await page.addInitScript(reshape); await page.reload(); await page.evaluate(() => { location.hash = "#/analysis"; }); await page.waitForSelector("table.fig2"); };
+
+  test("phages tested with only one kind of enzyme sit in a strip beside the plot", async ({ page }) => {
+    await ready(page);
+    const box = await page.locator("#gcat").evaluate((svg) => { const r = [...svg.querySelectorAll("rect")], sq = r[1], strips = [...svg.querySelectorAll("rect.strip")].map((x) => ({ x: +x.getAttribute("x"), y: +x.getAttribute("y"), w: +x.getAttribute("width"), h: +x.getAttribute("height") })); return { sq: { x: +sq.getAttribute("x"), y: +sq.getAttribute("y"), w: +sq.getAttribute("width"), h: +sq.getAttribute("height") }, strips }; });
+    expect(box.strips.length).toBe(2);
+    const at = (pid) => page.locator(`#gcat circle[data-pid="${pid}"]`).evaluate((c) => ({ x: +c.getAttribute("cx"), y: +c.getAttribute("cy") }));
+    const inside = (p, b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h;
+    const below = box.strips.find((b) => b.y > box.sq.y + box.sq.h - 1), left = box.strips.find((b) => b.x < box.sq.x);
+    expect(inside(await at("p07"), below)).toBe(true);          // no A/T-site enzyme tested
+    expect(inside(await at("p08"), left)).toBe(true);           // no G/C-site enzyme tested
+    expect(inside(await at("p01"), box.sq)).toBe(true);
+    await expect(page.locator('#gcat circle[data-pid="p09"]')).toHaveCount(0);   // mixed-site enzymes only: not plotted
+    await expect(page.locator("#gcat")).toContainText("A/T not tested");
+    await expect(page.locator("#gcat")).toContainText("G/C not tested");
+    await expect(page.locator(".scatter p.tiny")).toContainText("10 phages plotted; 2 of them in the grey strips, tested with only one kind of enzyme; 1 tested with mixed-site enzymes only is not plotted");
+    // corner labels replace the long reading guide
+    await expect(page.locator("#gcat")).toContainText("both kinds");
+    await expect(page.locator(".scatter p.tiny")).not.toContainText("Lower right");
+  });
+
+  test("every dot stays inside the plot, even at 0% and 100%", async ({ page }) => {
+    await ready(page);
+    const r = await page.locator("#gcat").evaluate((svg) => { const sq = svg.querySelectorAll("rect")[1], x0 = +sq.getAttribute("x"), y0 = +sq.getAttribute("y"), w = +sq.getAttribute("width"), pad = 16;
+      const pts = [...svg.querySelectorAll("circle[data-pid]")].map((c) => ({ x: +c.getAttribute("cx"), y: +c.getAttribute("cy") })).filter((p) => p.x >= x0 && p.y <= y0 + w);
+      return { n: pts.length, minX: Math.min(...pts.map((p) => p.x)) - (x0 + pad), maxX: Math.max(...pts.map((p) => p.x)) - (x0 + w - pad), minY: Math.min(...pts.map((p) => p.y)) - (y0 + pad), maxY: Math.max(...pts.map((p) => p.y)) - (y0 + w - pad) }; });
+    expect(r.n).toBeGreaterThan(5);
+    expect(r.minX).toBeGreaterThanOrEqual(0); expect(r.maxX).toBeLessThanOrEqual(0);     // between the 0% and 100% grid lines
+    expect(r.minY).toBeGreaterThanOrEqual(0); expect(r.maxY).toBeLessThanOrEqual(0);
+  });
+
+  test("a phage with only a mixed-site enzyme blocked is labelled, and empty evidence shows a dash", async ({ page }) => {
+    await ready(page);
+    const row = page.locator('table.fig2 tr[data-pid="p09"]');
+    await expect(row.locator("td").nth(7)).toHaveText("Mixed sites only");
+    await expect(row.locator("td").nth(8)).toHaveText("–");
+    await expect(page.locator('select[data-an="f2.f.call"] option', { hasText: "Mixed sites only" })).toHaveCount(1);
+  });
+
+  test("the header counts follow the filters, and active filters are marked", async ({ page }) => {
+    await ready(page);
+    const sum = page.locator('details[data-sec="fig2"] summary');
+    await expect(sum).toContainText("of 11 phages)");
+    await expect(page.locator(".f2panel .on")).toHaveCount(0);
+    await page.selectOption('select[data-an="f2.f.call"]', "G/C");
+    const n = await page.locator("table.fig2 tbody tr").count();
+    await expect(sum).toContainText(`of the ${n} phages the filters leave: G/C ${n} · A/T 0 · both 0; 11 phages in all`);
+    await expect(page.locator(".f2panel .on")).toHaveCount(1);
+    await expect(page.locator('select[data-an="f2.f.call"]')).toHaveClass(/on/);
+    await page.click('[data-act="f2clear"]');
+    await expect(sum).toContainText("of 11 phages)");
+    await expect(page.locator(".f2panel .on")).toHaveCount(0);
+  });
+
+  test("the downloaded plot carries its legend", async ({ page }) => {
+    await ready(page);
+    const [dl] = await Promise.all([page.waitForEvent("download"), page.click('[data-adl="f2s.png"]')]);
+    expect(dl.suggestedFilename()).toMatch(/^gc_at_plot_.*\.png$/);
+    const size = require("fs").statSync(await dl.path()).size;
+    expect(size).toBeGreaterThan(5000);
   });
 });
 
